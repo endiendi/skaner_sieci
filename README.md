@@ -2,6 +2,8 @@
 
 Prosty skrypt w Pythonie do skanowania sieci lokalnej (LAN) w poszukiwaniu aktywnych urządzeń. Wyświetla adresy IP, adresy MAC, nazwy hostów (jeśli możliwe do rozwiązania) oraz producentów kart sieciowych na podstawie bazy danych OUI (Organizationally Unique Identifier).
 
+W ramach nauki programowania — bardziej kopiuj-wklej i research w sieci, ale coś się udało.
+
 ## Funkcje
 
 *   **Automatyczne wykrywanie prefiksu sieciowego:** Próbuje automatycznie wykryć prefiks sieci lokalnej (np. `192.168.1.`).
