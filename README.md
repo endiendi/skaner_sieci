@@ -93,6 +93,4 @@ Skrypt został przetestowany i powinien działać na:
 
 ## Licencja
 
-(Opcjonalnie) Możesz dodać tutaj informację o licencji, np.:
-
 Brak
