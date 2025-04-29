@@ -9,7 +9,17 @@ import locale
 import ipaddress
 import sys
 import concurrent.futures
-from typing import List, Tuple, Optional, Dict
+import threading
+import errno
+from typing import List, Tuple, Optional, Dict, Any
+import shlex
+# import platform # Już powinien być
+# if platform.system() == "Windows":
+#     import msvcrt
+# else: # Linux/macOS
+#     import termios
+#     import tty
+#     import select
 
 # Funkcja pomocnicza do instalacji
 def zainstaluj_pakiet(nazwa_pakietu: str) -> bool:
@@ -130,7 +140,7 @@ DEFAULT_END_IP: int = 254
 # URL bazy OUI i konfiguracja cache
 OUI_URL: str = "http://standards-oui.ieee.org/oui/oui.txt"
 OUI_LOCAL_FILE: str = "oui.txt"
-OUI_UPDATE_INTERVAL: int = 86400 # Co ile sekund aktualizować plik (domyślnie 24h)
+OUI_UPDATE_INTERVAL: int = 86400 # Co ile sekund aktualizować plik oui.txt (domyślnie 24h)
 # Timeout dla operacji sieciowych
 REQUESTS_TIMEOUT: int = 15 # Timeout dla pobierania OUI
 PING_TIMEOUT_MS: int = 200 # Timeout dla ping w ms (Windows)
@@ -141,7 +151,399 @@ VPN_INTERFACE_PREFIXES: List[str] = ['tun', 'tap', 'open', 'wg', 'tailscale'] # 
 DEFAULT_ENCODING = locale.getpreferredencoding(False)
 WINDOWS_OEM_ENCODING = 'cp852' # Częste kodowanie OEM w Polsce, można dostosować
 MAX_HOSTNAME_WORKERS: int = 10 # Liczba wątków do równoległego pobierania nazw hostów
+MAX_PING_WORKERS: int = 3 # <--- Dodaj: Maksymalna liczba równoległych pingów im więcej tym mniejsza dokładność zależnie od komputera
+DEFAULT_LINE_WIDTH: int = 125 # Zdefiniuj stałą szerokość linii
+INPUT_TIMEOUT_SECONDS = 10 # Czas w sekundach na reakcję użytkownika
+TIMEOUT_SENTINEL = object() # Unikalny obiekt sygnalizujący timeout
+OPISY_PORTOW: Dict[int, str] = {
+    21: "FTP (File Transfer Protocol)",
+    22: "SSH (Secure Shell)",
+    23: "Telnet",
+    25: "SMTP (Simple Mail Transfer Protocol)",
+    53: "DNS (Domain Name System)",
+    80: "HTTP (HyperText Transfer Protocol)",
+    110: "POP3 (Post Office Protocol v3)",
+    135: "Microsoft RPC (Remote Procedure Call)",
+    139: "NetBIOS Session Service",
+    143: "IMAP (Internet Message Access Protocol)",
+    443: "HTTPS (HTTP Secure)",
+    445: "Microsoft-DS (SMB - Server Message Block)",
+    993: "IMAPS (IMAP Secure)",
+    995: "POP3S (POP3 Secure)",
+    1723: "PPTP (Point-to-Point Tunneling Protocol)",
+    3306: "MySQL Database",
+    3389: "RDP (Remote Desktop Protocol)",
+    5432: "PostgreSQL Database",
+    5900: "VNC (Virtual Network Computing)",
+    8000: "Alternatywny HTTP (często serwery deweloperskie)",
+    8080: "Alternatywny HTTP (często proxy lub serwery web)",
+    8123: "Home Assistant (HTTPS)", # Dodano opis
+    4357: "Home Assistant (HTTP)", # Dodano opis
+    8443: "Alternatywny HTTPS",
+    5060: "SIP (Session Initiation Protocol) - używany do VoIP",
+    5061: "SIPS (SIP Secure) - bezpieczna wersja SIP",
+    67: "DHCP (Dynamic Host Configuration Protocol) - Server",
+    68: "DHCP (Dynamic Host Configuration Protocol) - Client",
+    161: "SNMP (Simple Network Management Protocol) - Agent",
+    162: "SNMP (Simple Network Management Protocol) - Trap",
+    631: "IPP (Internet Printing Protocol) - drukarki sieciowe",
+    1433: "Microsoft SQL Server",
+    1521: "Oracle Database",
+    6667: "IRC (Internet Relay Chat)",
+    6697: "IRC over SSL (IRC Secure)",
+    2375: "Docker Daemon (bez TLS)",
+    2376: "Docker Daemon (z TLS)",
+    4000: "Serwery deweloperskie (często używany przez różne frameworki)",
+    5000: "Serwery deweloperskie (często Flask w Pythonie)",
+    8081: "Alternatywny HTTP (często używany przez serwery proxy lub aplikacje Java)",
+    8888: "Jupyter Notebook",
+    9000: "FastCGI (często używany z serwerami PHP-FPM)",
+    9100: "Exporter Prometheus (metryki aplikacji)",
+    9090: "Prometheus Server",
+    10250: "Kubelet API (Kubernetes)",
+    10255: "Kubelet Read-Only Port (Kubernetes) - bez uwierzytelniania",
+    8001: "Kubernetes API Server (port insecure)", # Zazwyczaj zabezpieczony przez proxy
+    6443: "Kubernetes API Server (HTTPS)",
+    30000-32767: "Zakres NodePort (Kubernetes) - dla eksternalnego dostępu do usług",
+    8096: "Jellyfin (HTTP)",
+    8989: "Jellyfin (HTTPS)", # Domyślny port HTTPS, może być skonfigurowany
+    32400: "Plex Media Server",
+    8080: "Audiobookshelf (HTTP) - Domyślny, ale konfigurowalny",
+    8443: "Audiobookshelf (HTTPS) - Jeśli skonfigurowano SSL",
+    # Inne podobne usługi i ich domyślne porty
+}
+# Maksymalna liczba wątków do skanowania portów dla JEDNEGO hosta
+MAX_PORT_SCAN_WORKERS: int = 10 # Dostosuj wg potrzeb
 
+import math
+
+def wyswietl_legende_portow(wyniki_portow: Dict[str, List[int]], opisy: Dict[int, str] = OPISY_PORTOW) -> None:
+    """
+    Wyświetla legendę dla portów, które zostały znalezione jako otwarte
+    na co najmniej jednym z zeskanowanych hostów.
+
+    Args:
+        wyniki_portow: Słownik mapujący IP na listę otwartych portów {ip: [port1, port2,...]}.
+        opisy: Słownik mapujący numery portów na ich opisy.
+    """
+    # Zbierz wszystkie unikalne otwarte porty ze wszystkich hostów
+    wszystkie_otwarte_porty_set = set()
+    for lista_portow in wyniki_portow.values():
+        wszystkie_otwarte_porty_set.update(lista_portow)
+
+    # Jeśli znaleziono jakiekolwiek otwarte porty, wyświetl legendę
+    if wszystkie_otwarte_porty_set:
+        wyswietl_tekst_w_linii("-", DEFAULT_LINE_WIDTH, "Legenda znalezionych otwartych portów", Fore.LIGHTYELLOW_EX, Fore.LIGHTCYAN_EX, True)
+
+        # Posortuj numery portów
+        posortowane_porty = sorted(list(wszystkie_otwarte_porty_set))
+
+        # Wyświetl opis dla każdego znalezionego portu
+        for port in posortowane_porty:
+            opis = opisy.get(port, "Nieznana usługa") # Pobierz opis lub użyj domyślnego
+            print(f"  Port {Fore.LIGHTMAGENTA_EX}{port:<5}{Style.RESET_ALL}: {opis}")
+
+        # Możesz dodać linię końcową, jeśli chcesz
+        # print("-" * DEFAULT_LINE_WIDTH)
+    # Jeśli żaden port nie został znaleziony jako otwarty, nic nie rób
+
+
+def skanuj_port(ip: str, port: int, timeout: float = 0.2) -> Optional[int]:
+    """
+    Sprawdza, czy dany port TCP jest otwarty na podanym adresie IP.
+
+    Args:
+        ip: Adres IP celu.
+        port: Numer portu do sprawdzenia.
+        timeout: Czas oczekiwania na połączenie w sekundach.
+
+    Returns:
+        Numer portu (int) jeśli jest otwarty, None w przeciwnym razie.
+    """
+    sock = None
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(timeout)
+        wynik = sock.connect_ex((ip, port))
+        if wynik == 0:
+            # print(f"Port {port} OTWARTY na {ip}") # Debug
+            return port # <-- Zwróć numer portu, jeśli otwarty
+        # else: # Debug
+            # if wynik == errno.ECONNREFUSED:
+            #     print(f"Port {port} ZAMKNIĘTY (odrzucono) na {ip}")
+            # else:
+            #     print(f"Port {port} FILTROWANY/NIEDOSTĘPNY (kod: {wynik}) na {ip}")
+        return None # <-- Zwróć None, jeśli zamknięty lub błąd połączenia
+    except socket.timeout:
+        # print(f"Port {port} TIMEOUT na {ip}") # Debug
+        return None # <-- Zwróć None przy timeout
+    except socket.gaierror:
+        # print(f"Błąd nazwy dla {ip}") # Debug
+        return None # <-- Zwróć None przy błędzie nazwy
+    except socket.error as e:
+        # print(f"Błąd gniazda dla {ip}:{port} - {e}") # Debug
+        return None # <-- Zwróć None przy innym błędzie gniazda
+    finally:
+        if sock:
+            sock.close()
+
+def skanuj_wybrane_porty_dla_ip(ip: str, porty_do_skanowania: Optional[List[int]] = None, timeout: float = 0.2) -> List[int]:
+    """
+    Skanuje podaną listę portów TCP na danym adresie IP równolegle
+    i zwraca listę otwartych portów. Domyślnie skanuje porty zdefiniowane
+    jako klucze w słowniku OPISY_PORTOW.
+
+    Args:
+        ip: Adres IP celu.
+        porty_do_skanowania: Opcjonalna lista numerów portów do sprawdzenia.
+                             Jeśli None, używane są klucze z OPISY_PORTOW.
+        timeout: Czas oczekiwania na połączenie dla każdego portu w sekundach.
+
+    Returns:
+        Lista numerów (int) otwartych portów. Zwraca pustą listę w razie błędów
+        lub gdy żaden port z listy nie jest otwarty.
+    """
+    otwarte_porty: List[int] = []
+    if not ip: # Podstawowa walidacja
+        return otwarte_porty
+
+    # --- Użyj kluczy z OPISY_PORTOW jako domyślnej listy portów ---
+    ports_to_scan = porty_do_skanowania if porty_do_skanowania is not None else list(OPISY_PORTOW.keys())
+    # -------------------------------------------------------------
+
+    if not ports_to_scan:
+        # print(f"Brak portów do skanowania dla {ip}.") # Debug
+        return otwarte_porty
+
+    # print(f"Rozpoczynanie skanowania {len(ports_to_scan)} portów dla {ip} (max {MAX_PORT_SCAN_WORKERS} wątków)...") # Debug
+
+    try:
+        # Upewnij się, że nie tworzymy więcej wątków niż portów do skanowania
+        max_workers = min(MAX_PORT_SCAN_WORKERS, len(ports_to_scan))
+        if max_workers <= 0: # Zapobiegaj błędom przy 0 portach
+             return otwarte_porty
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Tworzymy mapowanie future -> port, aby wiedzieć, który port był skanowany
+            future_to_port = {executor.submit(skanuj_port, ip, port, timeout): port for port in ports_to_scan}
+
+            # Zbieramy wyniki w miarę ich kończenia
+            for future in concurrent.futures.as_completed(future_to_port):
+                port_skanowany = future_to_port[future]
+                try:
+                    wynik = future.result() # Pobierz wynik (numer portu lub None)
+                    if wynik is not None: # Jeśli skanuj_port zwrócił numer portu
+                        otwarte_porty.append(wynik)
+                except Exception as exc:
+                    # Logowanie błędu dla konkretnego portu, ale kontynuacja skanowania innych
+                    # print(f"Błąd podczas skanowania portu {port_skanowany} na {ip}: {exc}") # Debug
+                    pass # Ignoruj błędy pojedynczych portów, aby nie przerywać całego skanowania
+
+    except KeyboardInterrupt:
+        # Jeśli użytkownik przerwie (Ctrl+C) podczas skanowania portów dla tego IP
+        # print(f"\n{Fore.YELLOW}Przerwano skanowanie portów dla {ip}.{Style.RESET_ALL}")
+        # obsluz_przerwanie_uzytkownika() # Obsłuż przerwanie globalnie - lepiej w main
+        # Zwracamy to, co udało się znaleźć do tej pory
+        pass # Pozwól obsłudze w main złapać KeyboardInterrupt
+    except Exception as e:
+        # Ogólny błąd przy tworzeniu puli wątków lub inny nieoczekiwany
+        print(f"{Fore.RED}Nieoczekiwany błąd podczas skanowania portów dla {ip}: {e}{Style.RESET_ALL}")
+
+    # Sortujemy listę otwartych portów przed zwróceniem
+    otwarte_porty.sort()
+    # print(f"Skanowanie portów dla {ip} zakończone. Otwarte: {otwarte_porty}") # Debug
+    return otwarte_porty
+
+def pobierz_wszystkie_aktywne_ip() -> Tuple[Dict[str, List[str]], Optional[str]]:
+    """
+    Pobiera adresy IP (IPv4) wszystkich aktywnych interfejsów sieciowych
+    oraz identyfikuje prawdopodobny główny adres IP używany do połączeń wychodzących.
+
+    Wykorzystuje psutil do znalezienia interfejsów, które są w stanie "UP"
+    i zwraca słownik mapujący nazwę interfejsu na listę jego adresów IPv4
+    (ignorując loopback i link-local).
+    Dodatkowo wywołuje pobierz_ip_interfejsu() w celu znalezienia głównego IP.
+
+    Returns:
+        Krotka zawierająca:
+        - Słownik, gdzie kluczem jest nazwa interfejsu (str),
+          a wartością jest lista adresów IPv4 (List[str]) przypisanych
+          do tego interfejsu.
+        - Prawdopodobny główny adres IP wychodzący (Optional[str])
+          zidentyfikowany przez pobierz_ip_interfejsu(), lub None.
+        Zwraca (pusty słownik, None), jeśli psutil jest niedostępny lub wystąpi błąd.
+    """
+    aktywne_interfejsy_ip: Dict[str, List[str]] = {}
+    glowny_ip_wychodzacy: Optional[str] = None
+
+    # Najpierw spróbuj zidentyfikować główny IP wychodzący
+    # Ta funkcja już istnieje i robi to dobrze
+    glowny_ip_wychodzacy = pobierz_ip_interfejsu()
+
+    if not PSUTIL_AVAILABLE:
+        print(f"{Fore.YELLOW}Biblioteka 'psutil' nie jest dostępna. Nie można pobrać pełnej listy interfejsów.{Style.RESET_ALL}")
+        # Zwracamy pusty słownik, ale zachowujemy znaleziony główny IP (jeśli się udało)
+        return aktywne_interfejsy_ip, glowny_ip_wychodzacy
+
+    try:
+        stats = psutil.net_if_stats()
+        addrs = psutil.net_if_addrs()
+
+        for nazwa_interfejsu, statystyki in stats.items():
+            if statystyki.isup:
+                if nazwa_interfejsu in addrs:
+                    adresy_ipv4_interfejsu: List[str] = []
+                    for snic in addrs[nazwa_interfejsu]:
+                        if snic.family == socket.AF_INET:
+                            try:
+                                ip_addr = ipaddress.ip_address(snic.address)
+                                if not ip_addr.is_loopback and not ip_addr.is_link_local:
+                                    adresy_ipv4_interfejsu.append(snic.address)
+                            except ValueError:
+                                continue
+                    if adresy_ipv4_interfejsu:
+                        aktywne_interfejsy_ip[nazwa_interfejsu] = adresy_ipv4_interfejsu
+
+    except Exception as e:
+        print(f"{Fore.RED}Wystąpił błąd podczas pobierania informacji o interfejsach sieciowych z psutil: {e}{Style.RESET_ALL}")
+        # W razie błędu psutil, nadal zwracamy to, co udało się znaleźć przez pobierz_ip_interfejsu
+        return {}, glowny_ip_wychodzacy
+
+    # Zwracamy słownik wszystkich aktywnych IP oraz zidentyfikowany główny IP
+    return aktywne_interfejsy_ip, glowny_ip_wychodzacy
+
+def wyswietl_tekst_w_linii(znak: str,
+                           dlugosc_linii: int,
+                           tekst: Optional[str] = None, 
+                           kolor_tekstu: Optional[str] = None,
+                           kolor_znaku: Optional[str] = None,
+                           dodaj_odstepy: bool = False):
+    """
+    Wyświetla tekst wyśrodkowany w linii o zadanej długości,
+    otoczony podanym znakiem i spacjami, z opcjonalnymi, osobnymi
+    kolorami dla tekstu i znaków wypełniających oraz opcjonalnymi odstępami.
+    Jeśli tekst nie zostanie podany, wyświetla linię wypełnioną znakiem.
+
+    Args:
+        znak: Znak używany do wypełnienia reszty linii. Powinien być pojedynczym znakiem.
+        dlugosc_linii: Całkowita docelowa długość linii.
+        tekst (Optional[str]): Tekst do wyświetlenia na środku. Jeśli None lub pusty, linia będzie wypełniona znakiem.
+        kolor_tekstu (Optional[str]): Opcjonalny kod koloru dla tekstu głównego.
+        kolor_znaku (Optional[str]): Opcjonalny kod koloru dla znaków wypełniających.
+        dodaj_odstepy (bool): Jeśli True, dodaje pustą linię przed i po głównej linii.
+    """
+    # Sprawdzenie i korekta znaku
+    if not znak:
+        znak = "-"
+    elif len(znak) > 1:
+        znak = znak[0]
+
+    linia_wynikowa = ""
+
+    # Sprawdź, czy tekst został podany i nie jest pusty
+    if tekst and tekst.strip():
+        # --- Logika dla tekstu ---
+        tekst_ze_spacjami = f" {tekst.strip()} " # Usuń ewentualne białe znaki z tekstu
+        dlugosc_tekstu = len(tekst_ze_spacjami)
+
+        # Oblicz, ile znaków wypełniających potrzeba
+        pozostala_dlugosc = dlugosc_linii - dlugosc_tekstu
+        if pozostala_dlugosc < 0:
+            pozostala_dlugosc = 0 # Tekst jest dłuższy niż linia
+
+        # Podziel znaki wypełniające na lewą i prawą stronę
+        dlugosc_lewa = math.floor(pozostala_dlugosc / 2)
+        dlugosc_prawa = math.ceil(pozostala_dlugosc / 2)
+
+        znaki_lewe = znak * dlugosc_lewa
+        znaki_prawe = znak * dlugosc_prawa
+
+        # Budowanie linii z kolorami
+        # Dodaj lewe znaki z kolorem (jeśli podano)
+        if kolor_znaku and COLORAMA_AVAILABLE:
+            linia_wynikowa += f"{kolor_znaku}{znaki_lewe}{Style.RESET_ALL}"
+        else:
+            linia_wynikowa += znaki_lewe
+
+        # Dodaj tekst główny z kolorem (jeśli podano)
+        if kolor_tekstu and COLORAMA_AVAILABLE:
+            linia_wynikowa += f"{kolor_tekstu}{tekst_ze_spacjami}{Style.RESET_ALL}"
+        else:
+            linia_wynikowa += tekst_ze_spacjami
+
+        # Dodaj prawe znaki z kolorem (jeśli podano)
+        if kolor_znaku and COLORAMA_AVAILABLE:
+            linia_wynikowa += f"{kolor_znaku}{znaki_prawe}{Style.RESET_ALL}"
+        else:
+            linia_wynikowa += znaki_prawe
+    else:
+        # --- Logika dla braku tekstu (wypełnienie całej linii znakiem) ---
+        pelna_linia_znakow = znak * dlugosc_linii
+        if kolor_znaku and COLORAMA_AVAILABLE:
+            linia_wynikowa = f"{kolor_znaku}{pelna_linia_znakow}{Style.RESET_ALL}"
+        else:
+            linia_wynikowa = pelna_linia_znakow
+
+    # Dodaj odstęp przed, jeśli wymagane
+    if dodaj_odstepy:
+        print()
+
+    # Wyświetl finalną linię
+    print(linia_wynikowa)
+
+    # Dodaj odstęp po, jeśli wymagane
+    if dodaj_odstepy:
+        print()
+
+
+def obsluz_przerwanie_uzytkownika():
+    """
+    Obsługuje wyjątek KeyboardInterrupt (Ctrl+C).
+    Czyści bieżącą linię konsoli, wyświetla standardowy komunikat
+    o przerwaniu i kończy działanie skryptu z kodem 0.
+    """
+    try:
+        # Wyczyść bieżącą linię (na wypadek, gdyby kursor był w trakcie input() lub postępu)
+        sys.stdout.write("\r\033[K")
+        sys.stdout.flush()
+    except Exception:
+        # Ignoruj błędy podczas czyszczenia, np. jeśli strumień jest zamknięty
+        pass
+    # Wyświetl ujednolicony komunikat i zakończ
+    print(f"\n{Fore.YELLOW}Przerwano przez użytkownika. Zakończono.{Style.RESET_ALL}\n")
+    sys.exit(0) # Zakończ skrypt z kodem sukcesu (bo to intencja użytkownika)
+
+def przelicz_sekundy_na_minuty_sekundy(total_seconds: int) -> str:
+  """
+  Przelicza całkowitą liczbę sekund na format "minuty:sekundy".
+
+  Args:
+    total_seconds: Całkowita liczba sekund do przeliczenia.
+
+  Returns:
+    String w formacie "M:SS", gdzie M to minuty, a SS to sekundy
+    z wiodącym zerem, jeśli jest to konieczne.
+    Zwraca "0:00" dla wartości ujemnych lub zerowych.
+  """
+  if total_seconds <= 0:
+    return "0:00"
+
+  # Oblicz minuty używając dzielenia całkowitego
+  minuty = total_seconds // 60
+  # Oblicz pozostałe sekundy używając operatora modulo
+  sekundy = total_seconds % 60
+
+  # Zwróć sformatowany string, upewniając się, że sekundy mają dwa miejsca
+  # (np. 7 sekund jako "07")
+  return f"{minuty}:{sekundy:02d}"
+
+# Przykłady użycia:
+# print(f"70 sekund to: {przelicz_sekundy_na_minuty_sekundy(70)}")
+# print(f"125 sekund to: {przelicz_sekundy_na_minuty_sekundy(125)}")
+# print(f"5 sekund to: {przelicz_sekundy_na_minuty_sekundy(5)}")
+# print(f"60 sekund to: {przelicz_sekundy_na_minuty_sekundy(60)}")
+# print(f"0 sekund to: {przelicz_sekundy_na_minuty_sekundy(0)}")
+# print(f"-10 sekund to: {przelicz_sekundy_na_minuty_sekundy(-10)}")
 
 
 def pobierz_brame_domyslna() -> Optional[str]:
@@ -304,22 +706,27 @@ def czy_aktywny_vpn_lub_podobny() -> bool:
 
         # --- Krok 2: Decyzja na podstawie zebranych kandydatów i priorytetów ---
         if found_by_ip:
-            print(f"\n{Fore.CYAN}Info: Wykryto AKTYWNY interfejs VPN (CGNAT) wg adresu IP: {found_by_ip}{Style.RESET_ALL}")
+            wyswietl_tekst_w_linii(" ",DEFAULT_LINE_WIDTH,f"Info: Wykryto AKTYWNY interfejs VPN (CGNAT) wg adresu IP: {found_by_ip}",Fore.CYAN,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
+            # print(f"\n{Fore.CYAN}Info: Wykryto AKTYWNY interfejs VPN (CGNAT) wg adresu IP: {found_by_ip}{Style.RESET_ALL}")
             return True
         elif found_by_primary_name_with_ip:
-            print(f"\n{Fore.CYAN}Info: Wykryto AKTYWNY interfejs VPN wg nazwy (główny z IP): {found_by_primary_name_with_ip}{Style.RESET_ALL}")
+            wyswietl_tekst_w_linii(" ",DEFAULT_LINE_WIDTH,f"Info: Wykryto AKTYWNY interfejs VPN wg nazwy (główny z IP): {found_by_primary_name_with_ip}",Fore.CYAN,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
+            # print(f"\n{Fore.CYAN}Info: Wykryto AKTYWNY interfejs VPN wg nazwy (główny z IP): {found_by_primary_name_with_ip}{Style.RESET_ALL}")
             return True
         elif found_by_tailscale_name_with_ip:
-             print(f"\n{Fore.CYAN}Info: Wykryto AKTYWNY interfejs VPN wg nazwy (Tailscale z IP): {found_by_tailscale_name_with_ip}{Style.RESET_ALL}")
+             wyswietl_tekst_w_linii(" ",DEFAULT_LINE_WIDTH,f"Info: Wykryto AKTYWNY interfejs VPN wg nazwy (Tailscale z IP): {found_by_tailscale_name_with_ip}",Fore.CYAN,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
+            #  print(f"\n{Fore.CYAN}Info: Wykryto AKTYWNY interfejs VPN wg nazwy (Tailscale z IP): {found_by_tailscale_name_with_ip}{Style.RESET_ALL}")
              return True
         # --- ZMIANA KOMUNIKATÓW TUTAJ ---
         elif found_by_primary_name_only:
             # Zmieniono "AKTYWNY" na "potencjalny" i dodano "(może nie być połączony)"
-            print(f"\n{Fore.CYAN}Info: Wykryto potencjalny interfejs VPN wg nazwy (główny, może nie być połączony): {found_by_primary_name_only}{Style.RESET_ALL}")
+            wyswietl_tekst_w_linii(" ",DEFAULT_LINE_WIDTH,f"Info: Wykryto potencjalny interfejs VPN wg nazwy (główny, może nie być połączony): {found_by_primary_name_only}",Fore.CYAN,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
+            # print(f"\n{Fore.CYAN}Info: Wykryto potencjalny interfejs VPN wg nazwy (główny, może nie być połączony): {found_by_primary_name_only}{Style.RESET_ALL}")
             return False # Zwracama False
         elif found_by_tailscale_name_only:
             # Zmieniono "AKTYWNY" na "potencjalny" i dodano "(może nie być połączony)"
-            print(f"\n{Fore.CYAN}Info: Wykryto potencjalny interfejs VPN (może nie być połączony){Style.RESET_ALL}")
+            wyswietl_tekst_w_linii(" ",DEFAULT_LINE_WIDTH,f"Info: Wykryto potencjalny interfejs VPN (może nie być połączony)",Fore.CYAN,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
+            # print(f"\n{Fore.CYAN}Info: Wykryto potencjalny interfejs VPN (może nie być połączony){Style.RESET_ALL}")
             return False # Zwracama False
         else:
             return False
@@ -353,29 +760,29 @@ def pobierz_tabele_arp():
         print(f"Inny błąd podczas pobierania tabeli ARP: {e}")
         return None
 
-def parsuj_tabele_arp(wynik_arp: Optional[str], siec_prefix: str) -> List[Tuple[str, str]]:
+def parsuj_tabele_arp(wynik_arp: Optional[str], siec_prefix: str) -> Dict[str, str]:
     """
-    Parsuje tabelę ARP i wyodrębnia adresy IP i MAC.
+    Parsuje tabelę ARP i zwraca słownik mapujący adresy IP na adresy MAC
+    dla wpisów pasujących do podanego prefiksu sieciowego.
 
     Args:
         wynik_arp: Wyjście polecenia arp.
-        siec_prefix: Prefiks sieciowy do filtrowania.
+        siec_prefix: Prefiks sieciowy do filtrowania (np. "192.168.0.").
 
     Returns:
-        Lista krotek (ip, mac).
+        Słownik {ip (str): mac (str)}.
     """
-    urzadzenia: List[Tuple[str, str]] = []
+    arp_map: Dict[str, str] = {}
     if wynik_arp is None:
-        return urzadzenia
+        return arp_map
 
-    # Wzorce Regex skompilowane dla wydajności (jeśli używasz, upewnij się, że są zdefiniowane)
-    # Jeśli nie, można je zostawić w pętli lub przenieść tutaj
+    # Wzorce Regex skompilowane dla wydajności
     ip_pattern = re.compile(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})")
     mac_pattern = re.compile(r"([0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2})")
 
     linie = wynik_arp.strip().splitlines()
     for linia in linie:
-        # Ignoruj linie nagłówkowe lub puste (można dodać więcej warunków w razie potrzeby)
+        # Ignoruj linie nagłówkowe lub puste
         if not linia or linia.lower().startswith("interface") or linia.lower().startswith("internet address"):
             continue
 
@@ -386,50 +793,103 @@ def parsuj_tabele_arp(wynik_arp: Optional[str], siec_prefix: str) -> List[Tuple[
             ip = ip_match.group(1)
             mac = mac_match.group(1).upper().replace("-", ":") # Ujednolicenie formatu MAC
 
-            # --- POPRAWKA TUTAJ ---
-            # Użyj MULTICAST_PREFIXES (wielkie litery) zamiast multicast_prefixes
+            # Sprawdź, czy IP pasuje do prefiksu i nie jest multicastem
             if ip.startswith(siec_prefix) and not any(ip.startswith(mp) for mp in MULTICAST_PREFIXES):
-                # Unikaj duplikatów
-                if (ip, mac) not in urzadzenia:
-                    urzadzenia.append((ip, mac))
-    return urzadzenia
+                # Zapisz mapowanie IP -> MAC
+                arp_map[ip] = mac
+    return arp_map
 
-
-
-def pinguj_zakres(siec_prefix: str, start_ip: int, end_ip: int) -> None:
+def _ping_single_ip(ip: str, system: str) -> Optional[str]:
     """
-    Pinguj zakres adresów IP w danej podsieci.
+    Wysyła pojedynczy ping do podanego adresu IP.
+    Używa bezpiecznego cytowania z shlex.quote i shell=True.
+
+    Args:
+        ip: Adres IP do spingowania.
+        system: Nazwa systemu operacyjnego ('windows' lub inny).
+
+    Returns:
+        Adres IP (str) jeśli ping się powiódł (host odpowiedział), None w przeciwnym razie.
+    """
+    safe_ip = shlex.quote(ip)
+    try:
+        if system == "windows":
+            # Zwiększamy timeout, aby dać więcej czasu na odpowiedź, zwłaszcza przez VPN
+            polecenie_str = f"ping -n 1 -w {PING_TIMEOUT_MS * 2} {safe_ip} > NUL" # Zwiększony timeout
+        else: # Linux/macOS
+            # Zwiększamy timeout
+            polecenie_str = f"ping -c 1 -W {PING_TIMEOUT_SEC * 2} {safe_ip} > /dev/null" # Zwiększony timeout
+
+        # Uruchomienie polecenia z shell=True
+        subprocess.run(polecenie_str, check=True, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        #print(f"Ping OK: {ip}") # Debug
+        return ip # Zwróć IP, jeśli ping udany
+    except subprocess.CalledProcessError:
+        #print(f"Ping FAIL: {ip}") # Debug
+        return None # Ping nieudany (timeout lub inny błąd ping)
+    except FileNotFoundError:
+        print(f"{Fore.RED}Błąd: Polecenie 'ping' nie znalezione.{Style.RESET_ALL}")
+        raise # Rzucamy wyjątek, aby zatrzymać pulę wątków
+    except Exception as e:
+        print(f"{Fore.RED}Błąd podczas pingowania {ip}: {e}{Style.RESET_ALL}")
+        return None # Inny błąd traktujemy jako nieudany ping
+
+def pinguj_zakres(siec_prefix: str, start_ip: int, end_ip: int) -> List[str]:
+    """
+    Pinguj zakres adresów IP w danej podsieci RÓWNOLEGLE, używając puli wątków
+    i bezpiecznego shell=True z shlex.quote.
 
     Args:
         siec_prefix: Prefiks sieciowy (np. "192.168.0.").
         start_ip: Początkowy numer hosta.
         end_ip: Końcowy numer hosta.
-    """
-    print(f"Pingowanie zakresu adresów {siec_prefix}{start_ip} - {siec_prefix}{end_ip}...")
-    system = platform.system().lower()
 
-    for i in range(start_ip, end_ip + 1):
-        ip = f"{siec_prefix}{i}"
-        try:
-            if system == "windows":
-                # -n 1: wyślij 1 pakiet, -w PING_TIMEOUT_MS: timeout
-                polecenie = ["ping", "-n", "1", f"-w {PING_TIMEOUT_MS}", ip]
-                # Użycie subprocess.run bez shell=True jest bezpieczniejsze
-                # stdout i stderr są przekierowane, aby ukryć output
-                subprocess.run(polecenie, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            else: # Linux/macOS
-                # -c 1: wyślij 1 pakiet, -W PING_TIMEOUT_SEC: timeout
-                polecenie = ["ping", "-c", "1", f"-W {PING_TIMEOUT_SEC}", ip]
-                subprocess.run(polecenie, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            # print(f"Ping: {ip} - Odpowiada") # Odkomentuj do debugowania
-        except subprocess.CalledProcessError:
-            # print(f"Ping: {ip} - Brak odpowiedzi") # Odkomentuj do debugowania
-            pass # Ignoruj błędy pingowania (brak odpowiedzi)
-        except FileNotFoundError:
-            print(f"Błąd: Polecenie 'ping' nie znalezione. Upewnij się, że jest w ścieżce systemowej.")
-            break # Przerwij pętlę, jeśli ping nie działa
-        except Exception as e:
-            print(f"Błąd podczas pingowania {ip}: {e}")
+    Returns:
+        Lista adresów IP (str), które odpowiedziały na ping.
+    """
+    print(f"Pingowanie zakresu adresów {siec_prefix}{start_ip} - {siec_prefix}{end_ip} (równolegle, max {MAX_PING_WORKERS} wątków)...")
+    print("\r" + " " * 70 + "\r", end="") # Wyczyść linię postępu
+    system = platform.system().lower()
+    ips_to_ping = [f"{siec_prefix}{i}" for i in range(start_ip, end_ip + 1)]
+    total_ips = len(ips_to_ping)
+    completed_count = 0
+    successful_ips: List[str] = [] # Lista do przechowywania udanych IP
+    ping_failed_critically = False # Flaga błędu krytycznego
+
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_PING_WORKERS) as executor:
+            futures = {executor.submit(_ping_single_ip, ip, system): ip for ip in ips_to_ping}
+
+            for future in concurrent.futures.as_completed(futures):
+                completed_count += 1
+                print(f"\rPostęp pingowania: {completed_count}/{total_ips} adresów sprawdzonych...", end="")
+                ip_processed = futures[future] # Pobierz IP powiązane z tym future
+
+                try:
+                    result = future.result() # Pobierz wynik (IP lub None) lub rzuć wyjątek
+                    if result: # Jeśli wynik nie jest None (czyli ping się udał)
+                        successful_ips.append(result)
+                except FileNotFoundError:
+                     print(f"\n{Fore.RED}Błąd krytyczny: Polecenie 'ping' nie znalezione. Przerywanie pingowania.{Style.RESET_ALL}")
+                     ping_failed_critically = True
+                     executor.shutdown(wait=False, cancel_futures=True)
+                     break
+                except Exception as exc:
+                     print(f'\n{Fore.YELLOW}Wątek pingowania dla {ip_processed} zgłosił wyjątek: {exc}{Style.RESET_ALL}')
+
+    except KeyboardInterrupt:
+        obsluz_przerwanie_uzytkownika()
+    finally:
+        # Wyczyść linię postępu
+        print("\r" + " " * 70 + "\r", end="") # Wyczyść linię postępu
+
+    if not ping_failed_critically:
+        print(f"Pingowanie zakończone. Odpowiedziało {len(successful_ips)} hostów.")
+    else:
+        print("Pingowanie przerwane z powodu błędu krytycznego.")
+
+    return successful_ips # Zwróć listę udanych IP
+
 
 def pobierz_nazwe_hosta(ip: str) -> str:
     """Pobiera nazwę hosta dla danego IP z timeoutem."""
@@ -460,116 +920,6 @@ def pobierz_nazwe_hosta(ip: str) -> str:
     finally:
         socket.setdefaulttimeout(original_timeout) # Przywróć domyślny timeout
     return nazwa_wyswietlana
-
-
-def pokaz_arp_z_nazwami(siec_prefix: str, baza_oui: Dict[str, str]) -> None:
-    """
-    Wyświetla listę urządzeń z Lp., adresami IP, MAC, nazwami hostów i producentami OUI,
-    kolorując wiersze i oznaczając hosta lokalnego oraz bramę domyślną.
-    Używa wątków do przyspieszenia pobierania nazw hostów.
-
-    Args:
-        siec_prefix: Prefiks sieciowy do filtrowania.
-        baza_oui: Słownik zawierający prefiksy OUI i nazwy producentów.
-    """
-    wynik_arp = pobierz_tabele_arp()
-    if wynik_arp is None:
-        print(f"{Fore.RED}Nie można pobrać tabeli ARP.{Style.RESET_ALL}")
-        return
-
-    urzadzenia = parsuj_tabele_arp(wynik_arp, siec_prefix)
-    host_ip = pobierz_ip_interfejsu()
-    host_mac = pobierz_mac_adres(host_ip) if host_ip else None
-    gateway_ip = pobierz_brame_domyslna()
-
-    # Dodaj hosta do listy, jeśli nie został znaleziony w tabeli ARP
-    if host_ip and host_ip.startswith(siec_prefix):
-        znaleziono_hosta = any(ip == host_ip for ip, _ in urzadzenia)
-        if not znaleziono_hosta:
-            urzadzenia.append((host_ip, host_mac if host_mac else "Nieznany MAC"))
-
-    # Sortuj urządzenia po adresach IP
-    try:
-        urzadzenia.sort(key=lambda x: list(map(int, x[0].split('.'))))
-    except ValueError:
-        print(f"{Fore.YELLOW}Ostrzeżenie: Nie można posortować adresów IP (niepoprawny format?).{Style.RESET_ALL}")
-        urzadzenia.sort(key=lambda x: x[0])
-
-    # --- Przyspieszenie pobierania nazw hostów ---
-    ips_to_lookup = [ip for ip, mac in urzadzenia if not ip.endswith(".255")] # Zbierz IP do sprawdzenia
-    hostname_cache: Dict[str, str] = {} # Słownik do przechowywania wyników
-
-    print(f"Pobieranie nazw hostów dla {len(ips_to_lookup)} adresów (max {MAX_HOSTNAME_WORKERS} wątków)...")
-    start_lookup_time = time.time()
-
-    # Użyj ThreadPoolExecutor do równoległego wywołania pobierz_nazwe_hosta
-    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_HOSTNAME_WORKERS) as executor:
-        # map zachowuje kolejność i zwraca wyniki w tej samej kolejności co wejściowe IP
-        # zip łączy oryginalne IP z wynikami zapytań
-        hostname_results = executor.map(pobierz_nazwe_hosta, ips_to_lookup)
-        hostname_cache = dict(zip(ips_to_lookup, hostname_results))
-
-    end_lookup_time = time.time()
-    print(f"Pobieranie nazw hostów zakończone w {end_lookup_time - start_lookup_time:.2f} sekund.")
-    # --- Koniec przyspieszenia ---
-
-    # Oblicz szerokość kolumny Lp.
-    lp_width = len(str(len(urzadzenia))) + 1
-    total_width = lp_width + 16 + 20 + 35 + 30 + (4 * 1)
-    separator_line = "-" * total_width
-
-    print("\nZnalezione urządzenia w sieci lokalnej:")
-    print(separator_line)
-    print(f"{Fore.LIGHTYELLOW_EX}{'Lp.':<{lp_width}} {'Adres IP':<16} {'Adres MAC':<20} {'Nazwa Hostu':<30} {'Producent (OUI)':<30}{Style.RESET_ALL}")
-    print(separator_line)
-
-    for idx, (ip, mac) in enumerate(urzadzenia, start=1):
-        if ip.endswith(".255"):
-            continue
-
-        # Pobierz nazwę hosta z cache (słownika) zamiast wywoływać funkcję ponownie
-        nazwa_wyswietlana = hostname_cache.get(ip, "Nieznana") # Użyj .get() dla bezpieczeństwa
-
-        producent_oui = "Nieznany"
-        if mac != "Nieznany MAC" and len(mac) >= 8:
-            oui_prefix_do_lookupu = mac[:8].upper().replace(":", "-")
-            producent = baza_oui.get(oui_prefix_do_lookupu)
-            if producent:
-                 producent_oui = re.sub(r'\s*\(.*\)\s*$', '', producent).strip()
-
-        # Oznaczanie hosta lokalnego
-        is_local_host = (ip == host_ip)
-        if is_local_host:
-            # Sprawdź, czy nazwa już nie zawiera "(Ty)" (na wypadek gdyby cache zwrócił ją)
-            if nazwa_wyswietlana != "Nieznana" and "(Ty)" not in nazwa_wyswietlana:
-                nazwa_wyswietlana += " (Ty)"
-            elif nazwa_wyswietlana == "Nieznana":
-                nazwa_wyswietlana = f"{ip} (Ty)"
-
-        # Oznaczanie bramy domyślnej
-        if ip == gateway_ip:
-            # Sprawdź, czy nazwa już nie zawiera "(Brama)"
-            if nazwa_wyswietlana != "Nieznana" and "(Brama)" not in nazwa_wyswietlana and not is_local_host:
-                nazwa_wyswietlana += " (Brama)"
-            elif is_local_host and "(Brama)" not in nazwa_wyswietlana: # Jeśli to jednocześnie host i brama
-                 nazwa_wyswietlana += " (Brama)"
-            elif nazwa_wyswietlana == "Nieznana":
-                nazwa_wyswietlana = f"{ip} (Brama)"
-
-        # Przygotuj sformatowaną linię
-        line_format = f"{str(idx):<{lp_width}} {ip:<16} {mac:<20} {nazwa_wyswietlana:<30.30} {producent_oui:<30.35}"
-
-        # Zastosuj kolor
-        if nazwa_wyswietlana != "Nieznana" and not nazwa_wyswietlana.startswith(ip):
-            print(f"{Fore.LIGHTGREEN_EX}{line_format}{Style.RESET_ALL}")
-        elif producent_oui != "Nieznany":
-            print(f"{Fore.GREEN}{line_format}{Style.RESET_ALL}")
-        else:
-            print(line_format)
-
-    print(separator_line)
-
-
 
 def pobierz_mac_adres(ip_address: Optional[str]) -> Optional[str]:
     """
@@ -702,6 +1052,303 @@ def pobierz_mac_adres(ip_address: Optional[str]) -> Optional[str]:
         print(f"Nieoczekiwany błąd podczas pobierania adresu MAC: {e}")
         return None
 
+# def pokaz_arp_z_nazwami(siec_prefix: str,
+#                         hosty_odpowiadajace: List[str], # Dodany parametr
+#                         baza_oui: Dict[str, str]) -> None:
+#     """
+#     Wyświetla listę urządzeń na podstawie hostów, które odpowiedziały na ping,
+#     uzupełniając informacje o MAC (z tabeli ARP), nazwy hostów i producentów OUI.
+#     Koloruje wiersze i oznacza hosta lokalnego oraz bramę domyślną.
+#     Używa wątków do przyspieszenia pobierania nazw hostów i wyświetla postęp.
+
+#     Args:
+#         siec_prefix: Prefiks sieciowy używany do skanowania.
+#         hosty_odpowiadajace: Lista adresów IP, które odpowiedziały na ping.
+#         baza_oui: Słownik zawierający prefiksy OUI i nazwy producentów.
+#     """
+#     print("\nOdczytywanie lokalnej tabeli ARP i pobieranie nazw hostów...")
+#     wynik_arp = pobierz_tabele_arp()
+#     if wynik_arp is None:
+#         print(f"{Fore.YELLOW}Ostrzeżenie: Nie można pobrać tabeli ARP. Adresy MAC mogą być niedostępne.{Style.RESET_ALL}")
+#         arp_map: Dict[str, str] = {} # Użyj pustego słownika, jeśli ARP zawiedzie
+#     else:
+#         # Parsuj tabelę ARP, aby uzyskać mapowanie IP -> MAC
+#         arp_map = parsuj_tabele_arp(wynik_arp, siec_prefix)
+
+#     host_ip = pobierz_ip_interfejsu()
+
+#     host_mac = pobierz_mac_adres(host_ip) if host_ip else None
+#     gateway_ip = pobierz_brame_domyslna()
+
+#     # --- Przygotowanie listy IP do wyświetlenia ---
+#     # Użyj seta, aby uniknąć duplikatów i łatwo dodać hosta/bramę
+#     ips_do_wyswietlenia_set = set(hosty_odpowiadajace)
+
+#     # Dodaj hosta lokalnego, jeśli ma pasujący prefiks
+#     if host_ip and host_ip.startswith(siec_prefix):
+#         ips_do_wyswietlenia_set.add(host_ip)
+
+#     # Dodaj bramę domyślną, jeśli ma pasujący prefiks i nie jest hostem lokalnym
+#     if gateway_ip and gateway_ip.startswith(siec_prefix):
+#         ips_do_wyswietlenia_set.add(gateway_ip)
+
+#     # Konwertuj z powrotem na listę i sortuj
+#     final_ip_list = list(ips_do_wyswietlenia_set)
+#     try:
+#         # Sortuj po wartościach liczbowych oktetów
+#         final_ip_list.sort(key=lambda ip: list(map(int, ip.split('.'))))
+#     except ValueError:
+#         print(f"{Fore.YELLOW}Ostrzeżenie: Nie można posortować adresów IP (niepoprawny format?). Sortowanie alfabetyczne.{Style.RESET_ALL}")
+#         final_ip_list.sort() # Sortowanie alfabetyczne jako fallback
+
+#     # --- Przyspieszenie pobierania nazw hostów Z POSTĘPEM ---
+#     # Pobieraj nazwy tylko dla posortowanej, unikalnej listy IP
+#     hostname_cache: Dict[str, str] = {}
+#     total_lookups = len(final_ip_list)
+#     completed_lookups = 0
+
+#     if total_lookups > 0:
+#         print(f"Pobieranie nazw hostów dla {total_lookups} adresów (max {MAX_HOSTNAME_WORKERS} wątków)...")
+#         # start_lookup_time = time.time()
+
+#         try:
+#             with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_HOSTNAME_WORKERS) as executor:
+#                 future_to_ip = {executor.submit(pobierz_nazwe_hosta, ip): ip for ip in final_ip_list}
+
+#                 for future in concurrent.futures.as_completed(future_to_ip):
+#                     ip = future_to_ip[future]
+#                     try:
+#                         hostname = future.result()
+#                         hostname_cache[ip] = hostname
+#                     except Exception as exc:
+#                         print(f'\n{Fore.YELLOW}Wątek pobierania nazwy dla {ip} zgłosił wyjątek: {exc}{Style.RESET_ALL}')
+#                         hostname_cache[ip] = "Błąd"
+
+#                     completed_lookups += 1
+#                     print(f"\rPostęp pobierania nazw: {completed_lookups}/{total_lookups} adresów sprawdzonych...", end="")
+
+#         except KeyboardInterrupt:
+#             obsluz_przerwanie_uzytkownika()
+#         finally:
+#             print("\r" + " " * 70 + "\r", end="") # Wyczyść linię postępu
+
+#         # end_lookup_time = time.time()
+#         # print(f"Pobieranie nazw hostów zakończone w {end_lookup_time - start_lookup_time:.2f} sekund.")
+#     else:
+#         print("Brak adresów IP do sprawdzenia nazw hostów.")
+
+
+#     # --- Wyświetlanie tabeli ---
+#     lp_width = len(str(total_lookups)) + 1 if total_lookups > 0 else 3
+#     total_width = DEFAULT_LINE_WIDTH
+#     separator_line = "-" * total_width
+
+#     print("\n")
+#     wyswietl_tekst_w_linii("-",DEFAULT_LINE_WIDTH,"Znalezione urządzenia w sieci", Fore.LIGHTYELLOW_EX,Fore.LIGHTCYAN_EX)
+#     print(f"{Fore.LIGHTYELLOW_EX}{'Lp.':<{lp_width}} {'Adres IP':<16} {'Adres MAC':<20} {'Nazwa Hostu':<30} {'Producent (OUI)':<35}{Style.RESET_ALL}")
+#     print(separator_line)
+
+#     if not final_ip_list:
+#         print(f"{Fore.YELLOW}Nie znaleziono żadnych aktywnych urządzeń w zakresie lub nie udało się ich przetworzyć.{Style.RESET_ALL}")
+#     else:
+#         for idx, ip in enumerate(final_ip_list, start=1):
+#             # Pobierz MAC z mapy ARP lub użyj MAC hosta, jeśli to host lokalny
+#             mac = arp_map.get(ip)
+#             if ip == host_ip and host_mac:
+#                 mac = host_mac # Użyj znanego MAC hosta
+#             if mac is None:
+#                 mac = "Nieznany MAC"
+
+#             # Pobierz nazwę hosta z cache
+#             nazwa_wyswietlana = hostname_cache.get(ip, "Nieznana")
+
+#             # Pobierz producenta OUI
+#             producent_oui = "Nieznany"
+#             if mac != "Nieznany MAC" and len(mac) >= 8:
+#                 oui_prefix_do_lookupu = mac[:8].upper().replace(":", "-")
+#                 producent = baza_oui.get(oui_prefix_do_lookupu)
+#                 if producent:
+#                     producent_oui = re.sub(r'\s*\((hex|base 16)\)\s*$', '', producent, flags=re.IGNORECASE).strip()
+
+#             # Oznaczanie hosta lokalnego i bramy
+#             is_local_host = (ip == host_ip)
+#             is_gateway = (ip == gateway_ip)
+#             oznaczenia = []
+#             if is_local_host: oznaczenia.append("(Ty)")
+#             if is_gateway: oznaczenia.append("(Brama)")
+#             oznaczenie_str = " ".join(oznaczenia)
+
+#             if oznaczenie_str:
+#                  if nazwa_wyswietlana != "Nieznana" and nazwa_wyswietlana != "Błąd":
+#                      nazwa_wyswietlana = f"{nazwa_wyswietlana} {oznaczenie_str}"
+#                  else:
+#                      nazwa_wyswietlana = f"{ip} {oznaczenie_str}"
+
+
+#             # Przygotuj sformatowaną linię, obcinając zbyt długie nazwy/producentów
+#             line_format = f"{str(idx):<{lp_width}} {ip:<16} {mac:<20} {nazwa_wyswietlana:<30.30} {producent_oui:<35.35}"
+
+#             # Zastosuj kolor
+#             if nazwa_wyswietlana != "Nieznana" and not nazwa_wyswietlana.startswith(ip) and nazwa_wyswietlana != "Błąd":
+#                 print(f"{Fore.CYAN}{line_format}{Style.RESET_ALL}")
+#             elif producent_oui != "Nieznany":
+#                 print(f"{Fore.GREEN}{line_format}{Style.RESET_ALL}")
+#             elif nazwa_wyswietlana == "Błąd":
+#                  print(f"{Fore.RED}{line_format}{Style.RESET_ALL}")
+#             else:
+#                 print(line_format)
+
+#     print(separator_line)
+
+def pokaz_arp_z_nazwami(siec_prefix: str,
+                        hosty_odpowiadajace: List[str],
+                        baza_oui: Dict[str, str],
+                        wyniki_portow: Dict[str, List[int]]) -> None: # <-- DODANO parametr wyniki_portow
+    """
+    Wyświetla listę urządzeń, uzupełniając informacje o MAC, nazwy hostów,
+    producentów OUI ORAZ otwarte porty.
+    Koloruje wiersze i oznacza hosta lokalnego oraz bramę domyślną.
+    Używa wątków do przyspieszenia pobierania nazw hostów i wyświetla postęp.
+
+    Args:
+        siec_prefix: Prefiks sieciowy używany do skanowania.
+        hosty_odpowiadajace: Lista adresów IP, które odpowiedziały na ping.
+        baza_oui: Słownik zawierający prefiksy OUI i nazwy producentów.
+        wyniki_portow: Słownik mapujący IP na listę otwartych portów {ip: [port1, port2,...]}.
+    """
+    print("\nOdczytywanie lokalnej tabeli ARP i pobieranie nazw hostów...")
+    wynik_arp = pobierz_tabele_arp()
+    if wynik_arp is None:
+        print(f"{Fore.YELLOW}Ostrzeżenie: Nie można pobrać tabeli ARP. Adresy MAC mogą być niedostępne.{Style.RESET_ALL}")
+        arp_map: Dict[str, str] = {}
+    else:
+        arp_map = parsuj_tabele_arp(wynik_arp, siec_prefix)
+
+    host_ip = pobierz_ip_interfejsu()
+    host_mac = pobierz_mac_adres(host_ip) if host_ip else None
+    gateway_ip = pobierz_brame_domyslna()
+
+    # --- Przygotowanie listy IP do wyświetlenia ---
+    ips_do_wyswietlenia_set = set(hosty_odpowiadajace)
+    if host_ip and host_ip.startswith(siec_prefix):
+        ips_do_wyswietlenia_set.add(host_ip)
+    if gateway_ip and gateway_ip.startswith(siec_prefix):
+        ips_do_wyswietlenia_set.add(gateway_ip)
+
+    final_ip_list = list(ips_do_wyswietlenia_set)
+    try:
+        final_ip_list.sort(key=lambda ip: list(map(int, ip.split('.'))))
+    except ValueError:
+        print(f"{Fore.YELLOW}Ostrzeżenie: Nie można posortować adresów IP. Sortowanie alfabetyczne.{Style.RESET_ALL}")
+        final_ip_list.sort()
+
+    # --- Przyspieszenie pobierania nazw hostów Z POSTĘPEM ---
+    hostname_cache: Dict[str, str] = {}
+    total_lookups = len(final_ip_list)
+    completed_lookups = 0
+
+    if total_lookups > 0:
+        print(f"Pobieranie nazw hostów dla {total_lookups} adresów (max {MAX_HOSTNAME_WORKERS} wątków)...")
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_HOSTNAME_WORKERS) as executor:
+                future_to_ip = {executor.submit(pobierz_nazwe_hosta, ip): ip for ip in final_ip_list}
+                for future in concurrent.futures.as_completed(future_to_ip):
+                    ip = future_to_ip[future]
+                    try:
+                        hostname = future.result()
+                        hostname_cache[ip] = hostname
+                    except Exception as exc:
+                        print(f'\n{Fore.YELLOW}Wątek pobierania nazwy dla {ip} zgłosił wyjątek: {exc}{Style.RESET_ALL}')
+                        hostname_cache[ip] = "Błąd"
+                    completed_lookups += 1
+                    print(f"\rPostęp pobierania nazw: {completed_lookups}/{total_lookups} adresów sprawdzonych...", end="")
+        except KeyboardInterrupt:
+            obsluz_przerwanie_uzytkownika()
+        finally:
+            print("\r" + " " * 70 + "\r", end="")
+    else:
+        print("Brak adresów IP do sprawdzenia nazw hostów.")
+
+    # --- Wyświetlanie tabeli ---
+    lp_width = len(str(total_lookups)) + 1 if total_lookups > 0 else 3
+    # Zaktualizowano szerokość kolumny Nazwa Hostu/Porty
+    host_port_width = 45
+    total_width = DEFAULT_LINE_WIDTH
+    separator_line = "-" * total_width
+
+    print("\n")
+    wyswietl_tekst_w_linii("-", total_width, "Znalezione urządzenia w sieci", Fore.LIGHTYELLOW_EX, Fore.LIGHTCYAN_EX)
+    # Zaktualizowano nagłówek kolumny
+    print(f"{Fore.LIGHTYELLOW_EX}{'Lp.':<{lp_width}} {'Adres IP':<16} {'Adres MAC':<20} {'Nazwa Hostu / Porty':<{host_port_width}} {'Producent (OUI)':<35}{Style.RESET_ALL}")
+    print(separator_line)
+
+    if not final_ip_list:
+        print(f"{Fore.YELLOW}Nie znaleziono żadnych aktywnych urządzeń w zakresie lub nie udało się ich przetworzyć.{Style.RESET_ALL}")
+    else:
+        for idx, ip in enumerate(final_ip_list, start=1):
+            mac = arp_map.get(ip)
+            if ip == host_ip and host_mac:
+                mac = host_mac
+            if mac is None:
+                mac = "Nieznany MAC"
+
+            nazwa_hosta_raw = hostname_cache.get(ip, "Nieznana")
+
+            # --- POBIERZ I SFORMATUJ OTWARTE PORTY ---
+            otwarte_porty_dla_ip = wyniki_portow.get(ip, []) # Pobierz listę portów dla tego IP
+            porty_str = ""
+            if otwarte_porty_dla_ip:
+                # Formatuj jako "[port1, port2, ...]"
+                porty_str = f" [{', '.join(map(str, otwarte_porty_dla_ip))}]"
+            # -----------------------------------------
+
+            # --- POŁĄCZ NAZWĘ HOSTA Z PORTAMI ---
+            # Dodaj porty do nazwy hosta, jeśli istnieją
+            nazwa_z_portami = f"{nazwa_hosta_raw}{porty_str}"
+            # ------------------------------------
+
+            producent_oui = "Nieznany"
+            if mac != "Nieznany MAC" and len(mac) >= 8:
+                oui_prefix_do_lookupu = mac[:8].upper().replace(":", "-")
+                producent = baza_oui.get(oui_prefix_do_lookupu)
+                if producent:
+                    producent_oui = re.sub(r'\s*\((hex|base 16)\)\s*$', '', producent, flags=re.IGNORECASE).strip()
+
+            # Oznaczanie hosta lokalnego i bramy (dodawane PO nazwie z portami)
+            is_local_host = (ip == host_ip)
+            is_gateway = (ip == gateway_ip)
+            oznaczenia = []
+            if is_local_host: oznaczenia.append("(Ty)")
+            if is_gateway: oznaczenia.append("(Brama)")
+            oznaczenie_str = " ".join(oznaczenia)
+
+            # Finalna nazwa do wyświetlenia
+            nazwa_finalna = nazwa_z_portami
+            if oznaczenie_str:
+                # Jeśli nazwa jest "Nieznana", pokaż IP zamiast "Nieznana" przed oznaczeniem
+                if nazwa_hosta_raw == "Nieznana" and not porty_str: # Tylko jeśli nie ma też portów
+                    nazwa_finalna = f"{ip} {oznaczenie_str}"
+                elif nazwa_hosta_raw == "Błąd" and not porty_str:
+                     nazwa_finalna = f"{ip} {oznaczenie_str}"
+                else:
+                    nazwa_finalna = f"{nazwa_z_portami} {oznaczenie_str}"
+
+
+            # Przygotuj sformatowaną linię, używając nowej szerokości i nazwy finalnej
+            # Użyj f-stringa do dynamicznego ustawienia szerokości i obcięcia
+            line_format = f"{str(idx):<{lp_width}} {ip:<16} {mac:<20} {nazwa_finalna:<{host_port_width}.{host_port_width}} {producent_oui:<35.35}"
+
+            # Zastosuj kolor (logika kolorowania bez zmian)
+            if nazwa_hosta_raw != "Nieznana" and nazwa_hosta_raw != "Błąd":
+                print(f"{Fore.CYAN}{line_format}{Style.RESET_ALL}")
+            elif producent_oui != "Nieznany":
+                print(f"{Fore.GREEN}{line_format}{Style.RESET_ALL}")
+            elif nazwa_hosta_raw == "Błąd":
+                 print(f"{Fore.RED}{line_format}{Style.RESET_ALL}")
+            else:
+                print(line_format)
+
+    print(separator_line)
 
 def pobierz_prefiks_sieciowy() -> Optional[str]:
     """
@@ -735,6 +1382,184 @@ def odczytaj_baze_oui_z_pliku(plik_lokalny):
     except Exception as e:
         print(f"Błąd podczas odczytu pliku lokalnego: {e}")
         return {}
+
+# def pobierz_baze_oui(url: str = OUI_URL, plik_lokalny: str = OUI_LOCAL_FILE,
+#                      timeout: int = REQUESTS_TIMEOUT, aktualizacja_co: int = OUI_UPDATE_INTERVAL) -> Dict[str, str]:
+#     """
+#     Pobiera bazę OUI z URL lub odczytuje z pliku lokalnego, jeśli jest aktualny.
+#     Jeśli 'requests' nie jest zainstalowane, próbuje tylko odczytać plik lokalny.
+#     """
+#     baza_oui: Dict[str, str] = {}
+#     script_dir = os.path.dirname(os.path.abspath(__file__))
+#     plik_lokalny_path = os.path.join(script_dir, plik_lokalny)
+
+#     plik_aktualny = False
+#     if os.path.exists(plik_lokalny_path):
+#         try:
+#             czas_modyfikacji = os.path.getmtime(plik_lokalny_path)
+#             if time.time() - czas_modyfikacji < aktualizacja_co:
+#                 print("Lokalna baza OUI jest aktualna.")
+#                 plik_aktualny = True
+#             else:
+#                  # Wyświetl komunikat o aktualizacji tylko jeśli requests jest dostępne
+#                  if REQUESTS_AVAILABLE:
+#                      print("Lokalna baza OUI jest przestarzała, próba aktualizacji...")
+#                  else:
+#                      print("Lokalna baza OUI jest przestarzała, ale 'requests' nie jest zainstalowane. Używam starej wersji.")
+#                      plik_aktualny = True # Traktuj jako aktualny, jeśli nie można pobrać nowej
+#         except Exception as e:
+#              print(f"{Fore.YELLOW}Błąd podczas sprawdzania wieku pliku OUI: {e}{Style.RESET_ALL}")
+
+#     if plik_aktualny:
+#         baza_oui = odczytaj_baze_oui_z_pliku(plik_lokalny_path)
+#         if baza_oui:
+#             return baza_oui
+#         else:
+#              # Próbuj pobrać z sieci tylko jeśli plik jest nieaktualny/uszkodzony I requests jest dostępne
+#              if REQUESTS_AVAILABLE:
+#                  print("Nie udało się odczytać aktualnego pliku OUI, próba pobrania z sieci.")
+#              else:
+#                  print(f"{Fore.YELLOW}Nie udało się odczytać pliku OUI. Pobieranie z sieci niemożliwe (brak 'requests').{Style.RESET_ALL}")
+#                  return {} # Zwróć pusty słownik, jeśli odczyt pliku zawiódł i sieć jest niemożliwa
+
+#     # --- Sekcja pobierania z sieci ---
+#     # Sprawdź jawnie, czy requests jest dostępne przed próbą użycia
+#     if not REQUESTS_AVAILABLE:
+#         print(f"{Fore.YELLOW}Biblioteka 'requests' nie jest zainstalowana. Nie można pobrać bazy OUI z sieci.{Style.RESET_ALL}")
+#         # Spróbuj odczytać plik lokalny ostatni raz (nawet jeśli przestarzały)
+#         print("Próba użycia ostatniej znanej wersji bazy OUI z pliku lokalnego...")
+#         return odczytaj_baze_oui_z_pliku(plik_lokalny_path)
+
+#     # Jeśli requests JEST dostępne, kontynuuj pobieranie z sieci
+#     print(f"Pobieranie bazy OUI z {url}...")
+#     try:
+#         # Konfiguracja ponowień (Retry) i sesji (Session) - wymaga importów w bloku try dla requests
+#         retry_strategy = Retry(
+#             total=3, # Mniejsza liczba ponowień
+#             backoff_factor=1,
+#             status_forcelist=[429, 500, 502, 503, 504],
+#             allowed_methods=["GET"]
+#         )
+#         adapter = HTTPAdapter(max_retries=retry_strategy)
+#         http = requests.Session()
+#         http.mount("https://", adapter)
+#         http.mount("http://", adapter)
+
+#         response = http.get(url, timeout=timeout)
+#         response.raise_for_status() # Rzuci wyjątek dla błędów HTTP
+#         baza_oui_txt = response.text
+#         print("Pobrano bazę OUI z sieci.")
+
+#         # Zapisz pobraną bazę do pliku
+#         try:
+#             with open(plik_lokalny_path, "w", encoding="utf-8") as f:
+#                 f.write(baza_oui_txt)
+#             print(f"Zapisano bazę OUI do pliku lokalnego: {plik_lokalny_path}")
+#         except Exception as e:
+#             print(f"{Fore.RED}Błąd podczas zapisu do pliku lokalnego OUI ({plik_lokalny_path}): {e}{Style.RESET_ALL}")
+
+#         # Sparsuj pobrany tekst
+#         baza_oui = pobierz_baze_z_tekstu(baza_oui_txt)
+#         return baza_oui
+
+#     except requests.exceptions.RequestException as e:
+#         print(f"{Fore.RED}Błąd podczas pobierania bazy OUI z sieci: {e}{Style.RESET_ALL}")
+#         print("Sprawdź połączenie internetowe.")
+#         # Jeśli pobieranie się nie powiodło, spróbuj użyć starej wersji z pliku
+#         print("Próba użycia ostatniej znanej wersji bazy OUI z pliku lokalnego...")
+#         return odczytaj_baze_oui_z_pliku(plik_lokalny_path) # Zwróci pusty dict, jeśli plik nie istnieje/nie da się odczytać
+#     except Exception as e:
+#         print(f"{Fore.RED}Inny błąd podczas przetwarzania bazy OUI: {e}{Style.RESET_ALL}")
+#         return odczytaj_baze_oui_z_pliku(plik_lokalny_path) # Zapasowo spróbuj plik
+
+# def pobierz_baze_oui(url: str = OUI_URL, plik_lokalny: str = OUI_LOCAL_FILE,
+#                      timeout: int = REQUESTS_TIMEOUT, aktualizacja_co: int = OUI_UPDATE_INTERVAL) -> Dict[str, str]:
+#     """
+#     Pobiera bazę OUI z URL lub odczytuje z pliku lokalnego, jeśli jest aktualny.
+#     Jeśli 'requests' nie jest zainstalowane, próbuje tylko odczytać plik lokalny.
+#     """
+#     baza_oui: Dict[str, str] = {}
+#     script_dir = os.path.dirname(os.path.abspath(__file__))
+#     plik_lokalny_path = os.path.join(script_dir, plik_lokalny)
+
+#     plik_aktualny = False
+#     if os.path.exists(plik_lokalny_path):
+#         try:
+#             czas_modyfikacji = os.path.getmtime(plik_lokalny_path)
+#             if time.time() - czas_modyfikacji < aktualizacja_co:
+#                 print("Lokalna baza OUI jest aktualna.")
+#                 plik_aktualny = True
+#             else:
+#                  # Wyświetl komunikat o aktualizacji tylko jeśli requests jest dostępne
+#                  if REQUESTS_AVAILABLE:
+#                      print("Lokalna baza OUI jest przestarzała, próba aktualizacji...")
+#                  else:
+#                      print("Lokalna baza OUI jest przestarzała, ale 'requests' nie jest zainstalowane. Używam starej wersji.")
+#                      plik_aktualny = True # Traktuj jako aktualny, jeśli nie można pobrać nowej
+#         except Exception as e:
+#              print(f"{Fore.YELLOW}Błąd podczas sprawdzania wieku pliku OUI: {e}{Style.RESET_ALL}")
+
+#     if plik_aktualny:
+#         baza_oui = odczytaj_baze_oui_z_pliku(plik_lokalny_path)
+#         if baza_oui:
+#             return baza_oui
+#         else:
+#              # Próbuj pobrać z sieci tylko jeśli plik jest nieaktualny/uszkodzony I requests jest dostępne
+#              if REQUESTS_AVAILABLE:
+#                  print("Nie udało się odczytać aktualnego pliku OUI, próba pobrania z sieci.")
+#              else:
+#                  print(f"{Fore.YELLOW}Nie udało się odczytać pliku OUI. Pobieranie z sieci niemożliwe (brak 'requests').{Style.RESET_ALL}")
+#                  return {} # Zwróć pusty słownik, jeśli odczyt pliku zawiódł i sieć jest niemożliwa
+
+#     # --- Sekcja pobierania z sieci ---
+#     # Sprawdź jawnie, czy requests jest dostępne przed próbą użycia
+#     if not REQUESTS_AVAILABLE:
+#         print(f"{Fore.YELLOW}Biblioteka 'requests' nie jest zainstalowana. Nie można pobrać bazy OUI z sieci.{Style.RESET_ALL}")
+#         # Spróbuj odczytać plik lokalny ostatni raz (nawet jeśli przestarzały)
+#         print("Próba użycia ostatniej znanej wersji bazy OUI z pliku lokalnego...")
+#         return odczytaj_baze_oui_z_pliku(plik_lokalny_path)
+
+#     # Jeśli requests JEST dostępne, kontynuuj pobieranie z sieci
+#     print(f"Pobieranie bazy OUI z {url}...")
+#     try:
+#         # Konfiguracja ponowień (Retry) i sesji (Session) - wymaga importów w bloku try dla requests
+#         retry_strategy = Retry(
+#             total=3, # Mniejsza liczba ponowień
+#             backoff_factor=1,
+#             status_forcelist=[429, 500, 502, 503, 504],
+#             allowed_methods=["GET"]
+#         )
+#         adapter = HTTPAdapter(max_retries=retry_strategy)
+#         http = requests.Session()
+#         http.mount("https://", adapter)
+#         http.mount("http://", adapter)
+
+#         response = http.get(url, timeout=timeout)
+#         response.raise_for_status() # Rzuci wyjątek dla błędów HTTP
+#         baza_oui_txt = response.text
+#         print("Pobrano bazę OUI z sieci.")
+
+#         # Zapisz pobraną bazę do pliku
+#         try:
+#             with open(plik_lokalny_path, "w", encoding="utf-8") as f:
+#                 f.write(baza_oui_txt)
+#             print(f"Zapisano bazę OUI do pliku lokalnego: {plik_lokalny_path}")
+#         except Exception as e:
+#             print(f"{Fore.RED}Błąd podczas zapisu do pliku lokalnego OUI ({plik_lokalny_path}): {e}{Style.RESET_ALL}")
+
+#         # Sparsuj pobrany tekst
+#         baza_oui = pobierz_baze_z_tekstu(baza_oui_txt)
+#         return baza_oui
+
+#     except requests.exceptions.RequestException as e:
+#         print(f"{Fore.RED}Błąd podczas pobierania bazy OUI z sieci: {e}{Style.RESET_ALL}")
+#         print("Sprawdź połączenie internetowe.")
+#         # Jeśli pobieranie się nie powiodło, spróbuj użyć starej wersji z pliku
+#         print("Próba użycia ostatniej znanej wersji bazy OUI z pliku lokalnego...")
+#         return odczytaj_baze_oui_z_pliku(plik_lokalny_path) # Zwróci pusty dict, jeśli plik nie istnieje/nie da się odczytać
+#     except Exception as e:
+#         print(f"{Fore.RED}Inny błąd podczas przetwarzania bazy OUI: {e}{Style.RESET_ALL}")
+#         return odczytaj_baze_oui_z_pliku(plik_lokalny_path) # Zapasowo spróbuj plik
 
 def pobierz_baze_oui(url: str = OUI_URL, plik_lokalny: str = OUI_LOCAL_FILE,
                      timeout: int = REQUESTS_TIMEOUT, aktualizacja_co: int = OUI_UPDATE_INTERVAL) -> Dict[str, str]:
@@ -786,9 +1611,8 @@ def pobierz_baze_oui(url: str = OUI_URL, plik_lokalny: str = OUI_LOCAL_FILE,
     # Jeśli requests JEST dostępne, kontynuuj pobieranie z sieci
     print(f"Pobieranie bazy OUI z {url}...")
     try:
-        # Konfiguracja ponowień (Retry) i sesji (Session) - wymaga importów w bloku try dla requests
         retry_strategy = Retry(
-            total=3, # Mniejsza liczba ponowień
+            total=3,
             backoff_factor=1,
             status_forcelist=[429, 500, 502, 503, 504],
             allowed_methods=["GET"]
@@ -798,8 +1622,12 @@ def pobierz_baze_oui(url: str = OUI_URL, plik_lokalny: str = OUI_LOCAL_FILE,
         http.mount("https://", adapter)
         http.mount("http://", adapter)
 
-        response = http.get(url, timeout=timeout)
-        response.raise_for_status() # Rzuci wyjątek dla błędów HTTP
+        # --- DODAJ NAGŁÓWEK USER-AGENT TUTAJ ---
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        # Użyj nagłówka w żądaniu GET
+        response = http.get(url, timeout=timeout, headers=headers) # <-- Dodano headers=headers
+        response.raise_for_status()
         baza_oui_txt = response.text
         print("Pobrano bazę OUI z sieci.")
 
@@ -816,14 +1644,18 @@ def pobierz_baze_oui(url: str = OUI_URL, plik_lokalny: str = OUI_LOCAL_FILE,
         return baza_oui
 
     except requests.exceptions.RequestException as e:
-        print(f"{Fore.RED}Błąd podczas pobierania bazy OUI z sieci: {e}{Style.RESET_ALL}")
-        print("Sprawdź połączenie internetowe.")
-        # Jeśli pobieranie się nie powiodło, spróbuj użyć starej wersji z pliku
+        # Zaktualizuj obsługę błędu, aby pokazać kod statusu, jeśli jest dostępny
+        error_message = f"Błąd podczas pobierania bazy OUI z sieci: {e}"
+        if e.response is not None:
+             error_message += f" (Status Code: {e.response.status_code})"
+        print(f"{Fore.RED}{error_message}{Style.RESET_ALL}")
+        print("Sprawdź połączenie internetowe i czy URL jest nadal poprawny.")
         print("Próba użycia ostatniej znanej wersji bazy OUI z pliku lokalnego...")
         return odczytaj_baze_oui_z_pliku(plik_lokalny_path) # Zwróci pusty dict, jeśli plik nie istnieje/nie da się odczytać
     except Exception as e:
         print(f"{Fore.RED}Inny błąd podczas przetwarzania bazy OUI: {e}{Style.RESET_ALL}")
         return odczytaj_baze_oui_z_pliku(plik_lokalny_path) # Zapasowo spróbuj plik
+
 
 
 def pobierz_baze_z_tekstu(baza_oui_txt):
@@ -925,94 +1757,390 @@ def pobierz_baze_z_tekstu(baza_oui_txt: str) -> Dict[str, str]:
         print("Ostrzeżenie: Nie udało się sparsować żadnych wpisów OUI z pobranego tekstu.")
     return baza_oui
 
+
+# def pobierz_i_zweryfikuj_prefiks() -> Optional[str]:
+#     """
+#     Pobiera prefiks sieciowy. Jeśli zostanie wykryty automatycznie,
+#     prosi użytkownika o potwierdzenie lub podanie innego.
+#     W przeciwnym razie prosi o ręczne wprowadzenie.
+#     """
+#     siec_prefix_automatyczny = pobierz_prefiks_sieciowy()
+#     potwierdzony_prefiks: Optional[str] = None
+
+#     if siec_prefix_automatyczny:
+#         # Automatyczne wykrywanie powiodło się - zapytaj użytkownika
+#         print(f"Wykryty prefiks sieciowy: '{siec_prefix_automatyczny}'.")
+#         while potwierdzony_prefiks is None: # Pytaj dopóki nie uzyskasz poprawnego prefiksu
+#             try:
+#                 # Zwykłe zapytanie input() bez timeoutu
+#                 prompt_text = f"Potwierdź {Fore.LIGHTMAGENTA_EX}[Enter]{Style.RESET_ALL}, podaj inny prefiks lub {Fore.LIGHTMAGENTA_EX}Ctrl+C{Style.RESET_ALL} aby zakończyć: "
+#                 odpowiedz = input(prompt_text)
+
+#                 if not odpowiedz.strip(): # Użytkownik nacisnął Enter
+#                     potwierdzony_prefiks = siec_prefix_automatyczny
+#                     print(f"Używany prefiks sieciowy: {potwierdzony_prefiks}")
+#                 else: # Użytkownik podał inny prefiks
+#                     nowy_prefiks = odpowiedz.strip()
+#                     if not nowy_prefiks.endswith("."):
+#                         nowy_prefiks += "."
+#                     # Prosta walidacja formatu XXX.YYY.ZZZ.
+#                     if re.match(r"^(\d{1,3}\.){3}$", nowy_prefiks):
+#                          # Dodatkowa walidacja zakresu oktetów
+#                          parts = nowy_prefiks.split('.')[:-1]
+#                          try:
+#                              if all(0 <= int(p) <= 255 for p in parts):
+#                                  potwierdzony_prefiks = nowy_prefiks
+#                                  print(f"Używany prefiks sieciowy: {potwierdzony_prefiks}")
+#                              else:
+#                                  print(f"{Fore.YELLOW}Ostrzeżenie: Jeden z oktetów w podanym prefiksie jest poza zakresem 0-255. Spróbuj ponownie.{Style.RESET_ALL}")
+#                                  # Pętla while będzie kontynuowana
+#                          except ValueError:
+#                               print(f"{Fore.YELLOW}Ostrzeżenie: Podany prefiks zawiera nie-liczbowe części. Spróbuj ponownie.{Style.RESET_ALL}")
+#                               # Pętla while będzie kontynuowana
+#                     else:
+#                         print(f"{Fore.YELLOW}Niepoprawny format podanego prefiksu (oczekiwano np. 192.168.1.). Spróbuj ponownie.{Style.RESET_ALL}")
+#                         # Pętla while będzie kontynuowana
+
+#             except EOFError:
+#                 # Wyczyść linię promptu jeśli wystąpił EOF
+#                 sys.stdout.write("\r\033[K")
+#                 sys.stdout.flush()
+#                 print("\nNie można pobrać odpowiedzi (EOF). Używam automatycznie wykrytego prefiksu.")
+#                 potwierdzony_prefiks = siec_prefix_automatyczny # Akceptuj automatyczny w razie EOF
+#                 break # Wyjdź z pętli while
+#             except KeyboardInterrupt:
+#                 obsluz_przerwanie_uzytkownika() # Ta funkcja obsługuje wyjście
+#             except Exception as e:
+#                  # Wyczyść linię promptu
+#                  sys.stdout.write("\r\033[K")
+#                  sys.stdout.flush()
+#                  print(f"\n{Fore.RED}Błąd podczas pobierania odpowiedzi: {e}{Style.RESET_ALL}")
+#                  print(f"Używam automatycznie wykrytego prefiksu: {siec_prefix_automatyczny}")
+#                  potwierdzony_prefiks = siec_prefix_automatyczny # Akceptuj automatyczny w razie błędu
+#                  break # Wyjdź z pętli while
+
+#     else:
+#         # Automatyczne wykrywanie nie powiodło się - przejdź do ręcznego wprowadzania
+#         print(f"{Fore.YELLOW}Nie udało się automatycznie wykryć prefiksu sieciowego.{Style.RESET_ALL}")
+#         while potwierdzony_prefiks is None:
+#             try:
+#                 prompt_text = f"Podaj prefiks sieciowy (np. 192.168.1.) lub {Fore.LIGHTMAGENTA_EX}Ctrl+C{Style.RESET_ALL} aby zakończyć: "
+#                 odpowiedz = input(prompt_text)
+
+#                 if not odpowiedz.strip():
+#                     print(f"{Fore.YELLOW}Prefiks nie może być pusty. Spróbuj ponownie.{Style.RESET_ALL}")
+#                     continue # Wróć do początku pętli while
+
+#                 nowy_prefiks = odpowiedz.strip()
+#                 if not nowy_prefiks.endswith("."):
+#                     nowy_prefiks += "."
+
+#                 if re.match(r"^(\d{1,3}\.){3}$", nowy_prefiks):
+#                     parts = nowy_prefiks.split('.')[:-1]
+#                     try:
+#                         if all(0 <= int(p) <= 255 for p in parts):
+#                             potwierdzony_prefiks = nowy_prefiks
+#                             print(f"Używany prefiks sieciowy: {potwierdzony_prefiks}")
+#                         else:
+#                             print(f"{Fore.YELLOW}Ostrzeżenie: Jeden z oktetów w podanym prefiksie jest poza zakresem 0-255. Spróbuj ponownie.{Style.RESET_ALL}")
+#                     except ValueError:
+#                          print(f"{Fore.YELLOW}Ostrzeżenie: Podany prefiks zawiera nie-liczbowe części. Spróbuj ponownie.{Style.RESET_ALL}")
+#                 else:
+#                     print(f"{Fore.YELLOW}Niepoprawny format prefiksu (oczekiwano np. 192.168.1.). Spróbuj ponownie.{Style.RESET_ALL}")
+
+#             except EOFError:
+#                 sys.stdout.write("\r\033[K")
+#                 sys.stdout.flush()
+#                 print("\nNie można pobrać prefiksu od użytkownika (EOF). Przerywam.")
+#                 return None # Zwróć None, aby główna część mogła zareagować
+#             except KeyboardInterrupt:
+#                 obsluz_przerwanie_uzytkownika()
+#             except Exception as e:
+#                  sys.stdout.write("\r\033[K")
+#                  sys.stdout.flush()
+#                  print(f"\n{Fore.RED}Błąd podczas pobierania odpowiedzi: {e}{Style.RESET_ALL}")
+#                  return None # Zwróć None w razie błędu
+
+
+    # return potwierdzony_prefiks
+
+def pobierz_i_zweryfikuj_prefiks() -> Optional[str]:
+    """
+    Pobiera prefiks sieciowy. Jeśli zostanie wykryty automatycznie,
+    prosi użytkownika o potwierdzenie lub podanie innego.
+    W przeciwnym razie prosi o ręczne wprowadzenie.
+    Czyści linię promptu po poprawnym wyborze.
+    """
+    siec_prefix_automatyczny = pobierz_prefiks_sieciowy()
+    potwierdzony_prefiks: Optional[str] = None
+
+    if siec_prefix_automatyczny:
+        # Automatyczne wykrywanie powiodło się - zapytaj użytkownika
+        print(f"Wykryty prefiks sieciowy: '{siec_prefix_automatyczny}'.")
+        while potwierdzony_prefiks is None: # Pytaj dopóki nie uzyskasz poprawnego prefiksu
+            try:
+                prompt_text = f"Potwierdź {Fore.LIGHTMAGENTA_EX}[Enter]{Style.RESET_ALL}, podaj inny prefiks lub {Fore.LIGHTMAGENTA_EX}Ctrl+C{Style.RESET_ALL} aby zakończyć: "
+                odpowiedz = input(prompt_text)
+
+                if not odpowiedz.strip(): # Użytkownik nacisnął Enter
+                    potwierdzony_prefiks = siec_prefix_automatyczny
+                    # --- CZYSZCZENIE LINII PROMPTU ---
+                    sys.stdout.write("\033[A\033[K") # Przesuń kursor w górę, wyczyść linię
+                    sys.stdout.flush()
+                    # --- KONIEC CZYSZCZENIA ---
+                    print(f"Używany prefiks sieciowy: {potwierdzony_prefiks}")
+                else: # Użytkownik podał inny prefiks
+                    nowy_prefiks = odpowiedz.strip()
+                    if not nowy_prefiks.endswith("."):
+                        nowy_prefiks += "."
+                    # Prosta walidacja formatu XXX.YYY.ZZZ.
+                    if re.match(r"^(\d{1,3}\.){3}$", nowy_prefiks):
+                         parts = nowy_prefiks.split('.')[:-1]
+                         try:
+                             if all(0 <= int(p) <= 255 for p in parts):
+                                 potwierdzony_prefiks = nowy_prefiks
+                                 # --- CZYSZCZENIE LINII PROMPTU ---
+                                 sys.stdout.write("\033[A\033[K") # Przesuń kursor w górę, wyczyść linię
+                                 sys.stdout.flush()
+                                 # --- KONIEC CZYSZCZENIA ---
+                                 print(f"Używany prefiks sieciowy: {potwierdzony_prefiks}")
+                             else:
+                                 # --- CZYSZCZENIE LINII PROMPTU PRZED BŁĘDEM ---
+                                 sys.stdout.write("\033[A\033[K")
+                                 sys.stdout.flush()
+                                 # --- KONIEC CZYSZCZENIA ---
+                                 print(f"{Fore.YELLOW}Ostrzeżenie: Jeden z oktetów w podanym prefiksie jest poza zakresem 0-255. Spróbuj ponownie.{Style.RESET_ALL}")
+                                 # Pętla while będzie kontynuowana
+                         except ValueError:
+                              # --- CZYSZCZENIE LINII PROMPTU PRZED BŁĘDEM ---
+                              sys.stdout.write("\033[A\033[K")
+                              sys.stdout.flush()
+                              # --- KONIEC CZYSZCZENIA ---
+                              print(f"{Fore.YELLOW}Ostrzeżenie: Podany prefiks zawiera nie-liczbowe części. Spróbuj ponownie.{Style.RESET_ALL}")
+                              # Pętla while będzie kontynuowana
+                    else:
+                        # --- CZYSZCZENIE LINII PROMPTU PRZED BŁĘDEM ---
+                        sys.stdout.write("\033[A\033[K")
+                        sys.stdout.flush()
+                        # --- KONIEC CZYSZCZENIA ---
+                        print(f"{Fore.YELLOW}Niepoprawny format podanego prefiksu (oczekiwano np. 192.168.1.). Spróbuj ponownie.{Style.RESET_ALL}")
+                        # Pętla while będzie kontynuowana
+
+            except EOFError:
+                # Wyczyść linię promptu jeśli wystąpił EOF
+                sys.stdout.write("\r\033[K")
+                sys.stdout.flush()
+                print("\nNie można pobrać odpowiedzi (EOF). Używam automatycznie wykrytego prefiksu.")
+                potwierdzony_prefiks = siec_prefix_automatyczny # Akceptuj automatyczny w razie EOF
+                break # Wyjdź z pętli while
+            except KeyboardInterrupt:
+                obsluz_przerwanie_uzytkownika() # Ta funkcja obsługuje wyjście
+            except Exception as e:
+                 # Wyczyść linię promptu
+                 sys.stdout.write("\r\033[K")
+                 sys.stdout.flush()
+                 print(f"\n{Fore.RED}Błąd podczas pobierania odpowiedzi: {e}{Style.RESET_ALL}")
+                 print(f"Używam automatycznie wykrytego prefiksu: {siec_prefix_automatyczny}")
+                 potwierdzony_prefiks = siec_prefix_automatyczny # Akceptuj automatyczny w razie błędu
+                 break # Wyjdź z pętli while
+
+    else:
+        # Automatyczne wykrywanie nie powiodło się - przejdź do ręcznego wprowadzania
+        print(f"{Fore.YELLOW}Nie udało się automatycznie wykryć prefiksu sieciowego.{Style.RESET_ALL}")
+        while potwierdzony_prefiks is None:
+            try:
+                prompt_text = f"Podaj prefiks sieciowy (np. 192.168.1.) lub {Fore.LIGHTMAGENTA_EX}Ctrl+C{Style.RESET_ALL} aby zakończyć: "
+                odpowiedz = input(prompt_text)
+
+                if not odpowiedz.strip():
+                    # --- CZYSZCZENIE LINII PROMPTU PRZED BŁĘDEM ---
+                    sys.stdout.write("\033[A\033[K")
+                    sys.stdout.flush()
+                    # --- KONIEC CZYSZCZENIA ---
+                    print(f"{Fore.YELLOW}Prefiks nie może być pusty. Spróbuj ponownie.{Style.RESET_ALL}")
+                    continue # Wróć do początku pętli while
+
+                nowy_prefiks = odpowiedz.strip()
+                if not nowy_prefiks.endswith("."):
+                    nowy_prefiks += "."
+
+                if re.match(r"^(\d{1,3}\.){3}$", nowy_prefiks):
+                    parts = nowy_prefiks.split('.')[:-1]
+                    try:
+                        if all(0 <= int(p) <= 255 for p in parts):
+                            potwierdzony_prefiks = nowy_prefiks
+                            # --- CZYSZCZENIE LINII PROMPTU ---
+                            sys.stdout.write("\033[A\033[K") # Przesuń kursor w górę, wyczyść linię
+                            sys.stdout.flush()
+                            # --- KONIEC CZYSZCZENIA ---
+                            print(f"Używany prefiks sieciowy: {potwierdzony_prefiks}")
+                        else:
+                            # --- CZYSZCZENIE LINII PROMPTU PRZED BŁĘDEM ---
+                            sys.stdout.write("\033[A\033[K")
+                            sys.stdout.flush()
+                            # --- KONIEC CZYSZCZENIA ---
+                            print(f"{Fore.YELLOW}Ostrzeżenie: Jeden z oktetów w podanym prefiksie jest poza zakresem 0-255. Spróbuj ponownie.{Style.RESET_ALL}")
+                    except ValueError:
+                         # --- CZYSZCZENIE LINII PROMPTU PRZED BŁĘDEM ---
+                         sys.stdout.write("\033[A\033[K")
+                         sys.stdout.flush()
+                         # --- KONIEC CZYSZCZENIA ---
+                         print(f"{Fore.YELLOW}Ostrzeżenie: Podany prefiks zawiera nie-liczbowe części. Spróbuj ponownie.{Style.RESET_ALL}")
+                else:
+                    # --- CZYSZCZENIE LINII PROMPTU PRZED BŁĘDEM ---
+                    sys.stdout.write("\033[A\033[K")
+                    sys.stdout.flush()
+                    # --- KONIEC CZYSZCZENIA ---
+                    print(f"{Fore.YELLOW}Niepoprawny format prefiksu (oczekiwano np. 192.168.1.). Spróbuj ponownie.{Style.RESET_ALL}")
+
+            except EOFError:
+                sys.stdout.write("\r\033[K")
+                sys.stdout.flush()
+                print("\nNie można pobrać prefiksu od użytkownika (EOF). Przerywam.")
+                return None # Zwróć None, aby główna część mogła zareagować
+            except KeyboardInterrupt:
+                obsluz_przerwanie_uzytkownika()
+            except Exception as e:
+                 sys.stdout.write("\r\033[K")
+                 sys.stdout.flush()
+                 print(f"\n{Fore.RED}Błąd podczas pobierania odpowiedzi: {e}{Style.RESET_ALL}")
+                 return None # Zwróć None w razie błędu
+
+    return potwierdzony_prefiks
+
+
 # --- Główna część skryptu ---
 if __name__ == "__main__":
+    try:
+        wyswietl_tekst_w_linii("-",DEFAULT_LINE_WIDTH,"Skaner Sieci Lokalnej",Fore.YELLOW,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
 
-    # Sprawdź obecność VPN lub inne i wyświetl ostrzeżenie tylko jeśli psutil jest dostępny
-    if PSUTIL_AVAILABLE:
-        # Użyj nowej nazwy funkcji
-        if czy_aktywny_vpn_lub_podobny():
-            print(f"{Style.BRIGHT}-{Style.RESET_ALL}" * 100)
-            # Zaktualizuj komunikat, aby był bardziej ogólny
-            print(f"\n{Fore.YELLOW}{Style.BRIGHT}  OSTRZEŻENIE: Wykryto aktywny interfejs VPN lub podobny (np. Tailscale).{Style.RESET_ALL}")
-            print(f"{Fore.YELLOW}  Może to zakłócać rozpoznawanie nazw hostów w Twojej sieci lokalnej (LAN).{Style.RESET_ALL}")
-            print(f"{Fore.YELLOW}  Jeśli nazwy hostów lokalnych nie są wyświetlane poprawnie (pokazuje 'Nieznana'), spróbuj:{Style.RESET_ALL}")
-            print(f"{Fore.YELLOW}    1. Skonfigurować VPN, aby używał lokalnych serwerów DNS (jeśli to możliwe, np. Split DNS).{Style.RESET_ALL}")
-            print(f"{Fore.YELLOW}    2. Tymczasowo wyłączyć VPN na czas działania skryptu.{Style.RESET_ALL}\n")
-            print(f"{Style.BRIGHT}-{Style.RESET_ALL}" * 100)
 
-    # print("\nSkanowanie zakończone.")
+        wszystkie_ip, glowny_ip = pobierz_wszystkie_aktywne_ip()
 
-    print(f"\n{Fore.LIGHTCYAN_EX}  ---- Skaner Sieci Lokalnej ----\n{Style.RESET_ALL}")
+        if glowny_ip:
+             print(f"{Fore.GREEN}  -> Prawdopodobny główny adres IP (dostęp do sieci): {glowny_ip}{Style.RESET_ALL}")
+        else:
+             print(f"{Fore.YELLOW}  -> Nie udało się jednoznacznie zidentyfikować głównego adresu IP (brak dostępu do sieci lub błąd).{Style.RESET_ALL}")
 
-    # Wyświetl adres IP i MAC komputera
 
-    host_ip =pobierz_ip_interfejsu()
-    # host_ip =pobierz_ip_przez_psutil()
-    host_mac = pobierz_mac_adres(host_ip) #if host_ip else "Nieznany"
-    print(f"Adres IP komputera: {host_ip if host_ip else 'Nieznany'}")
-    print(f"Adres MAC komputera: {host_mac if host_mac else 'Nieznany'}")
+        if wszystkie_ip:
+            print("  Lista wszystkich wykrytych aktywnych interfejsów i ich adresów IP (IPv4):")
+            for interfejs, ips in wszystkie_ip.items():
+                print(f"    Interfejs: {interfejs}")
+                for ip in ips:
+                    # Sprawdź, czy ten IP pasuje do zidentyfikowanego głównego IP
+                    if ip == glowny_ip:
+                        print(f"      - IP: {ip} {Fore.GREEN}(Główny){Style.RESET_ALL}")
+                    else:
+                        print(f"      - IP: {ip}")
+        elif PSUTIL_AVAILABLE: # Wyświetl tylko jeśli psutil miał działać
+            print(f"{Fore.YELLOW}  Nie znaleziono aktywnych interfejsów z użytecznymi adresami IPv4 przez psutil.{Style.RESET_ALL}")
 
-    # Pobierz i zweryfikuj prefiks sieciowy
-    siec_prefix = pobierz_prefiks_sieciowy() # Użyj poprawionej funkcji
-    if siec_prefix:
-        try:
-            odpowiedz = input(f"Wykryty prefiks sieciowy: '{siec_prefix}'. Czy jest prawidłowy? {Fore.LIGHTMAGENTA_EX} [Enter=Tak / Podaj inny / Ctrl+C=zakończ]: {Style.RESET_ALL}")
-            if odpowiedz.strip(): # Jeśli użytkownik coś wpisał
-                siec_prefix = odpowiedz.strip()
-                if not siec_prefix.endswith("."):
-                    siec_prefix += "."
-                # Prosta walidacja formatu prefiksu
-                if not re.match(r"^(\d{1,3}\.){3}$", siec_prefix):
-                    print("Niepoprawny format prefiksu. Używam wykrytego.")
-                    siec_prefix = pobierz_prefiks_sieciowy() # Przywróć wykryty
-                    if not siec_prefix: # Jeśli nawet wykryty był zły
-                         print("Nie można ustalić prefiksu. Przerywam.")
-                         exit(1)
-        except EOFError:
-             print("Używam automatycznie wykrytego prefiksu.")
-        except KeyboardInterrupt:
-            print("\nPrzerwano przez użytkownika.")
-            exit(0)
-    else:
-        while not siec_prefix:
+
+            # Sprawdź obecność VPN lub inne i wyświetl ostrzeżenie tylko jeśli psutil jest dostępny
+        if PSUTIL_AVAILABLE:
+            # Użyj nowej nazwy funkcji
+            if czy_aktywny_vpn_lub_podobny():
+                wyswietl_tekst_w_linii("-",DEFAULT_LINE_WIDTH,"OSTRZEŻENIE: Wykryto aktywny interfejs VPN lub podobny (np. Tailscale).",Fore.LIGHTYELLOW_EX,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
+                wyswietl_tekst_w_linii(" ",DEFAULT_LINE_WIDTH,"Może to zakłócać rozpoznawanie nazw hostów w Twojej sieci lokalnej (LAN).",Fore.YELLOW,Fore.LIGHTCYAN_EX,dodaj_odstepy=False)
+                wyswietl_tekst_w_linii(" ",DEFAULT_LINE_WIDTH,"Jeśli nazwy hostów lokalnych nie są wyświetlane poprawnie (pokazuje 'Nieznana'), spróbuj:",Fore.YELLOW,Fore.LIGHTCYAN_EX,dodaj_odstepy=False)  
+                wyswietl_tekst_w_linii(" ",DEFAULT_LINE_WIDTH,"1. Skonfigurować VPN, aby używał lokalnych serwerów DNS (jeśli to możliwe, np. Split DNS).",Fore.YELLOW,Fore.LIGHTCYAN_EX,dodaj_odstepy=False)
+                wyswietl_tekst_w_linii(" ",DEFAULT_LINE_WIDTH,"2. Tymczasowo wyłączyć VPN na czas działania skryptu.",Fore.YELLOW,Fore.LIGHTCYAN_EX,dodaj_odstepy=False)
+                wyswietl_tekst_w_linii("-",DEFAULT_LINE_WIDTH,"",Fore.YELLOW,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
+
+        # ... (kod sprawdzający VPN i wyświetlający IP/MAC hosta) ...
+        host_ip = glowny_ip #pobierz_ip_interfejsu()
+        host_mac = pobierz_mac_adres(host_ip) #if host_ip else "Nieznany"
+        print(f"Adres IP komputera: {host_ip if host_ip else 'Nieznany'}")
+        print(f"Adres MAC komputera: {host_mac if host_mac else 'Nieznany'}")
+
+        # Pobierz i zweryfikuj prefiks sieciowy używając nowej funkcji
+        siec_prefix = pobierz_i_zweryfikuj_prefiks()
+
+        # Sprawdź, czy udało się uzyskać prefiks
+        if siec_prefix is None:
+            print(f"{Fore.RED}Nie udało się ustalić prefiksu sieciowego. Zakończono.{Style.RESET_ALL}")
+            sys.exit(1) # Zakończ skrypt, jeśli prefiks nie został ustalony
+
+        # Pobierz bazę OUI (użyj poprawionej funkcji z cache)
+        print("\nPobieranie/ładowanie bazy OUI...")
+        baza_oui = pobierz_baze_oui(url=OUI_URL, plik_lokalny=OUI_LOCAL_FILE, timeout=REQUESTS_TIMEOUT, aktualizacja_co=OUI_UPDATE_INTERVAL)
+        if not baza_oui:
+            print(f"{Fore.YELLOW}OSTRZEŻENIE: Nie udało się załadować bazy OUI. Nazwy producentów nie będą dostępne.{Style.RESET_ALL}")
+            baza_oui = {} # Użyj pustego słownika
+
+        # Skanowanie sieci
+        print("\nRozpoczynanie skanowania sieci (ping)...")
+        start_arp_time = time.time() # Przesunięto start timera tutaj
+        # pinguj_zakres(siec_prefix, DEFAULT_START_IP, DEFAULT_END_IP)
+        # time.sleep(2) # Można usunąć lub zostawić, jeśli potrzebne
+        hosty_ktore_odpowiedzialy = pinguj_zakres(siec_prefix, DEFAULT_START_IP, DEFAULT_END_IP)
+        
+        # if hosty_ktore_odpowiedzialy:
+        #        print(f"\n{Fore.CYAN}Hosty, które odpowiedziały na ping ({len(hosty_ktore_odpowiedzialy)}):{Style.RESET_ALL}")
+        #        max_cols = 5
+        #        for i in range(0, len(hosty_ktore_odpowiedzialy), max_cols):
+        #            print("  " + "  ".join(f"{ip:<15}" for ip in hosty_ktore_odpowiedzialy[i:i+max_cols]))
+        # else:
+        #             print(f"\n{Fore.YELLOW}Żaden host w zakresie {siec_prefix}{DEFAULT_START_IP}-{DEFAULT_END_IP} nie odpowiedział na ping.{Style.RESET_ALL}")
+                # --- SKANOWANIE PORTÓW (NOWY KROK) ---
+        wyniki_skanowania_portow: Dict[str, List[int]] = {}
+        if hosty_ktore_odpowiedzialy: # Skanuj porty tylko jeśli są hosty
+            print("\nSkanowania wybranych portów dla aktywnych hostów...")
+            # start_scan_time = time.time()
+            # Użyjemy puli wątków do równoległego skanowania RÓŻNYCH hostów
+            MAX_HOST_SCAN_WORKERS = MAX_HOSTNAME_WORKERS # Możesz ustawić inną wartość
+
             try:
-                siec_prefix = input("Nie udało się wykryć prefiksu. Podaj prefiks sieciowy (np. 192.168.1.): ").strip()
-                if siec_prefix and not siec_prefix.endswith("."):
-                    siec_prefix += "."
-                if not re.match(r"^(\d{1,3}\.){3}$", siec_prefix):
-                    print("Niepoprawny format prefiksu. Spróbuj ponownie.")
-                    siec_prefix = None
-            except EOFError:
-                print("Nie można pobrać prefiksu od użytkownika. Przerywam.")
-                exit(1)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_HOST_SCAN_WORKERS) as host_executor:
+                    # Użyj funkcji skanuj_wybrane_porty_dla_ip, która sama używa wątków do portów
+                    future_to_ip_scan = {host_executor.submit(skanuj_wybrane_porty_dla_ip, ip): ip for ip in hosty_ktore_odpowiedzialy}
+
+                    processed_hosts = 0
+                    total_hosts_to_scan = len(hosty_ktore_odpowiedzialy)
+
+                    for future in concurrent.futures.as_completed(future_to_ip_scan):
+                        ip_skanowany = future_to_ip_scan[future]
+                        try:
+                            lista_otwartych = future.result()
+                            wyniki_skanowania_portow[ip_skanowany] = lista_otwartych
+                        except Exception as exc:
+                            print(f'\n{Fore.YELLOW}Skanowanie portów dla {ip_skanowany} zgłosiło wyjątek: {exc}{Style.RESET_ALL}')
+                            wyniki_skanowania_portow[ip_skanowany] = [] # Zapisz pustą listę w razie błędu
+
+                        processed_hosts += 1
+                        print(f"\rPostęp skanowania portów: {processed_hosts}/{total_hosts_to_scan} hostów sprawdzonych...", end="")
+
             except KeyboardInterrupt:
-                print("\nPrzerwano przez użytkownika.")
-                exit(0)
+                obsluz_przerwanie_uzytkownika()
+            finally:
+                print("\r" + " " * 70 + "\r", end="") # Wyczyść linię postępu
 
-    print(f"Używany prefiks sieciowy: {siec_prefix}")
+            # end_scan_time = time.time()
+            # print(f"Skanowanie portów zakończone w {end_scan_time - start_scan_time:.2f} sekund.")
+        else:
+            print("\nBrak aktywnych hostów do skanowania portów.")
+        # --- KONIEC SKANOWANIA PORTÓW ---
 
-    # Pobierz bazę OUI (użyj poprawionej funkcji z cache)
-    print("Pobieranie/ładowanie bazy OUI...")
-    baza_oui = pobierz_baze_oui(url=OUI_URL, plik_lokalny=OUI_LOCAL_FILE, timeout=REQUESTS_TIMEOUT, aktualizacja_co=OUI_UPDATE_INTERVAL)
-    if not baza_oui:
-        print("OSTRZEŻENIE: Nie udało się załadować bazy OUI. Nazwy producentów nie będą dostępne.")
-        baza_oui = {} # Użyj pustego słownika
+        # Wyświetlanie wyników z tabeli ARP
+        pokaz_arp_z_nazwami(siec_prefix, hosty_ktore_odpowiedzialy, baza_oui, wyniki_skanowania_portow)
+        end_arp_time = time.time() # Koniec timera
 
-    # Skanowanie sieci
-    print("\nRozpoczynanie skanowania sieci (ping)...")
-    start_time = time.time()
-    # Użyj poprawionej funkcji pinguj_zakres (bez shell=True)
-    pinguj_zakres(siec_prefix, DEFAULT_START_IP, DEFAULT_END_IP)
-    end_time = time.time()
-    print(f"Pingowanie zakończone w {end_time - start_time:.2f} sekund.")
+        # Wyświetl czas wykonania pod tabelą
+        czas_trwania_sekundy = end_arp_time - start_arp_time
+        print(f"\nCałkowity czas skanowania (ping + ARP + nazwy + porty): {czas_trwania_sekundy:.2f} sekund. Czyli {przelicz_sekundy_na_minuty_sekundy(round(czas_trwania_sekundy))} min:sek")  
+        
+        # --- WYŚWIETL LEGENDĘ PORTÓW (NOWY KROK) ---
+        wyswietl_legende_portow(wyniki_skanowania_portow)
+        # --- KONIEC WYŚWIETLANIA LEGENDY ---
 
-    # Wyświetlanie wyników z tabeli ARP
-    start_arp_time = time.time()
-    pokaz_arp_z_nazwami(siec_prefix, baza_oui)
-    end_arp_time = time.time()
-    # Wyświetl czas wykonania pod tabelą
-    print(f"Wyświetlanie tabeli ARP zakończone w {end_arp_time - start_arp_time:.2f} sekund.")
-
-    print("\nSkanowanie zakończone.\n")
-
+        wyswietl_tekst_w_linii("-",DEFAULT_LINE_WIDTH,"Skanowanie zakończone",Fore.LIGHTCYAN_EX,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
+    
+    except Exception as main_exc:
+         print(f"\n{Fore.RED}Wystąpił nieoczekiwany błąd w głównej części skryptu: {main_exc}{Style.RESET_ALL}")
+         # Możesz dodać tutaj bardziej szczegółowe logowanie błędu
+    finally:
+        # UWAGA: Użycie os._exit jest ostatecznością. Może powodować problemy
+        # z niezapisanymi danymi lub nieposprzątanymi zasobami.
+        # print("Wymuszone zakończenie skryptu...") # Opcjonalny komunikat debugowania
+        os._exit(0) # Wymuś zakończenie, aby obejść problem z wiszącym wątkiem input()
