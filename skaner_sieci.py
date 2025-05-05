@@ -178,13 +178,13 @@ MULTICAST_PREFIXES: List[str] = ["224.", "239.", "ff02."]
 # Domyślny zakres hostów do pingowania
 DEFAULT_START_IP: int = 1
 DEFAULT_END_IP: int = 254
-# URL bazy OUI i konfiguracja cache
+# URL bazy OUI i konfiguracja cach
 OUI_URL: str = "http://standards-oui.ieee.org/oui/oui.txt"
 OUI_LOCAL_FILE: str = "oui.txt"
 OUI_UPDATE_INTERVAL: int = 86400 # Co ile sekund aktualizować plik oui.txt (domyślnie 24h)
 # Timeout dla operacji sieciowych
 REQUESTS_TIMEOUT: int = 15 # Timeout dla pobierania OUI
-PING_TIMEOUT_MS: int = 200 # Timeout dla ping w ms (Windows)
+PING_TIMEOUT_MS: int = 300 # Timeout dla ping w ms (Windows)
 PING_TIMEOUT_SEC: float = 0.2 # Timeout dla ping w s (Linux/macOS)
 HOSTNAME_LOOKUP_TIMEOUT: float = 0.5 # Timeout dla socket.gethostbyaddr/getnameinfo
 VPN_INTERFACE_PREFIXES: List[str] = ['tun', 'tap', 'open', 'wg', 'tailscale'] # Dodano 'tailscale' dla pewności
@@ -332,11 +332,11 @@ OS_DEFINITIONS: Dict[str, Dict[str, str]] = {
         "desc": "Urządzenie sieciowe zarządzane przez SNMP (port 161)"
     },
     "UNKNOWN_PORTS": {
-        "abbr": "Unknown (Ports)",
+        "abbr": "Nieznany (Ports)",
         "desc": "Nieznany typ urządzenia (wykryto otwarte porty)"
     },
     "UNKNOWN_NO_PORTS": {
-        "abbr": "Unknown (No Ports)",
+        "abbr": "Nieznany (No Ports)",
         "desc": "Nieznany typ urządzenia (brak otwartych portów)"
     }
     # --- Uzupełnij o wszystkie ID używane w OS_FILTERS ---
@@ -945,7 +945,7 @@ def zgadnij_system_operacyjny(
          return OS_ABBREVIATIONS.get("NETWORK_WEB", "NetDev/Web")
 
     # Jeśli nic nie pasowało, a są jakieś otwarte porty
-    return OS_ABBREVIATIONS.get("UNKNOWN_PORTS", "Unknown (Ports)")
+    return OS_ABBREVIATIONS.get("UNKNOWN_PORTS", "Nieznany (Ports)")
 
 
 
@@ -1422,6 +1422,42 @@ def _ping_single_ip(ip: str, system: str) -> Optional[str]:
     except Exception as e:
         print(f"{Fore.RED}Błąd podczas pingowania {ip}: {e}{Style.RESET_ALL}")
         return None # Inny błąd traktujemy jako nieudany ping
+    
+def polacz_listy_ip(lista_arp: List[str], lista_ping: List[str]) -> List[str]:
+    """
+    Łączy dwie listy adresów IP, usuwa duplikaty i sortuje wynikową listę.
+
+    Args:
+        lista_arp: Lista adresów IP uzyskanych z tabeli ARP.
+        lista_ping: Lista adresów IP, które odpowiedziały na ping.
+
+    Returns:
+        Posortowana lista unikalnych adresów IP z obu list wejściowych.
+    """
+    # print("Łączenie list adresów IP z ARP i ping...")
+
+    # Połącz obie listy
+    polaczona_lista = lista_arp + lista_ping
+
+    # Usuń duplikaty używając set
+    unikalne_ip_set = set(polaczona_lista)
+
+    # Konwertuj z powrotem na listę
+    unikalne_ip_lista = list(unikalne_ip_set)
+
+    # Sortuj listę numerycznie dla lepszej czytelności
+    try:
+        # Użyj ipaddress do poprawnego sortowania adresów IP
+        unikalne_ip_lista.sort(key=ipaddress.ip_address)
+    except ValueError:
+        # Fallback na sortowanie alfabetyczne, jeśli wystąpi błąd
+        # (np. jeśli lista zawiera niepoprawne adresy IP)
+        print(f"{Fore.YELLOW}Ostrzeżenie: Nie można posortować adresów IP numerycznie. Sortowanie alfabetyczne.{Style.RESET_ALL}")
+        unikalne_ip_lista.sort()
+
+    # print(f"Połączono i usunięto duplikaty. Łączna liczba unikalnych adresów IP: {len(unikalne_ip_lista)}")
+    return unikalne_ip_lista
+
 
 def pinguj_zakres(siec_prefix: str, start_ip: int, end_ip: int) -> List[str]:
     """
@@ -1509,6 +1545,112 @@ def pobierz_nazwe_hosta(ip: str) -> str:
     finally:
         socket.setdefaulttimeout(original_timeout) # Przywróć domyślny timeout
     return nazwa_wyswietlana
+
+def pobierz_tabele_arp() -> Optional[str]:
+    """
+    Pobiera tabelę ARP dla danego systemu operacyjnego.
+
+    Returns:
+        str: Zawartość tabeli ARP lub None w przypadku błędu.
+    """
+    try:
+        system = platform.system().lower()
+        if system == "windows":
+            # Użycie kodowania cp852 (lub innego OEM) może być konieczne dla polskich znaków
+            # errors='ignore' pomoże uniknąć błędów dekodowania
+            wynik = subprocess.check_output("arp -a", shell=True, encoding='cp852', errors='ignore')
+        elif system == "linux":
+            wynik = subprocess.check_output("ip -4 neighbor", shell=True, encoding="utf-8", errors='ignore')
+        elif system == "darwin":  # macOS
+            wynik = subprocess.check_output("arp -an", shell=True, encoding="utf-8", errors='ignore')
+        else:
+            print(f"Nieobsługiwany system operacyjny: {system}")
+            return None
+        return wynik
+    except subprocess.CalledProcessError as e:
+        print(f"Błąd podczas pobierania tabeli ARP: {e}")
+        return None
+    except FileNotFoundError:
+        cmd = "arp -a" if platform.system().lower() == "windows" else "ip -4 neighbor" if platform.system().lower() == "linux" else "arp -an"
+        print(f"Błąd: Polecenie '{cmd.split()[0]}' nie znalezione.")
+        return None
+    except Exception as e:
+        print(f"Inny błąd podczas pobierania tabeli ARP: {e}")
+        return None
+
+def parsuj_tabele_arp(wynik_arp: Optional[str], siec_prefix: str) -> Dict[str, str]:
+    """
+    Parsuje tabelę ARP i zwraca słownik mapujący adresy IP na adresy MAC
+    dla wpisów pasujących do podanego prefiksu sieciowego.
+
+    Args:
+        wynik_arp: Wyjście polecenia arp.
+        siec_prefix: Prefiks sieciowy do filtrowania (np. "192.168.0.").
+
+    Returns:
+        Słownik {ip (str): mac (str)}.
+    """
+    arp_map: Dict[str, str] = {}
+    if wynik_arp is None:
+        return arp_map
+
+    # Wzorce Regex skompilowane dla wydajności
+    ip_pattern = re.compile(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})")
+    # Bardziej elastyczny wzorzec MAC, akceptujący różne separatory i wielkość liter
+    mac_pattern = re.compile(r"([0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}")
+
+    linie = wynik_arp.strip().splitlines()
+    for linia in linie:
+        # Ignoruj linie nagłówkowe lub puste
+        linia_lower = linia.lower()
+        if not linia.strip() or linia_lower.startswith("interface") or linia_lower.startswith("internet address") or "ff-ff-ff-ff-ff-ff" in linia_lower:
+            continue
+
+        ip_match = ip_pattern.search(linia)
+        mac_match = mac_pattern.search(linia)
+
+        if ip_match and mac_match:
+            ip = ip_match.group(1)
+            mac_raw = mac_match.group(0)
+            # Normalizacja MAC do XX:XX:XX:XX:XX:XX
+            mac = mac_raw.upper().replace("-", ":")
+
+            # Sprawdź, czy IP pasuje do prefiksu i nie jest multicastem/broadcastem
+            # (Broadcast MAC ff:ff:ff:ff:ff:ff jest już filtrowany wyżej)
+            if ip.startswith(siec_prefix) and not any(ip.startswith(mp) for mp in MULTICAST_PREFIXES):
+                # Zapisz mapowanie IP -> MAC, unikając duplikatów IP (ostatni wpis wygrywa)
+                arp_map[ip] = mac
+    return arp_map
+
+# --- Nowa funkcja ---
+def pobierz_ip_z_arp(siec_prefix: str) -> List[str]:
+    """
+    Pobiera listę adresów IP z tabeli ARP pasujących do danego prefiksu sieciowego.
+
+    Args:
+        siec_prefix: Prefiks sieciowy do filtrowania (np. "192.168.0.").
+
+    Returns:
+        Lista adresów IP (str) znalezionych w tabeli ARP dla danego prefiksu,
+        lub pusta lista w przypadku błędu lub braku pasujących wpisów.
+    """
+    print(f"Pobieranie adresów IP z tabeli ARP dla prefiksu: {siec_prefix}...")
+    wynik_arp_raw = pobierz_tabele_arp()
+    if wynik_arp_raw is None:
+        print("Nie udało się pobrać tabeli ARP.")
+        return []
+
+    mapa_arp = parsuj_tabele_arp(wynik_arp_raw, siec_prefix)
+
+    # Klucze słownika mapa_arp to adresy IP
+    lista_ip = list(mapa_arp.keys())
+
+    # if lista_ip:
+    #     print(f"Znaleziono {len(lista_ip)} adresów IP w tabeli ARP dla prefiksu {siec_prefix}.")
+    # else:
+    #     print(f"Nie znaleziono adresów IP w tabeli ARP dla prefiksu {siec_prefix}.")
+
+    return lista_ip
 
 def pobierz_mac_adres(ip_address: Optional[str]) -> Optional[str]:
     """
@@ -1779,7 +1921,11 @@ def wyswietl_rozszerzona_tabele_urzadzen(
     gateway_ip = pobierz_brame_domyslna()
 
     # --- Przygotowanie listy IP do wyświetlenia (bez zmian) ---
-    ips_do_wyswietlenia_set = set(hosty_odpowiadajace)
+    # ips_do_wyswietlenia_set = set(hosty_odpowiadajace)
+    ping_ips_set = set(hosty_odpowiadajace)
+    arp_ips_set = {ip for ip in arp_map.keys() if ip.startswith(siec_prefix)}
+    ips_do_wyswietlenia_set = ping_ips_set.union(arp_ips_set)
+
     if host_ip and host_ip.startswith(siec_prefix):
         ips_do_wyswietlenia_set.add(host_ip)
     if gateway_ip and gateway_ip.startswith(siec_prefix):
@@ -1791,7 +1937,7 @@ def wyswietl_rozszerzona_tabele_urzadzen(
     except ValueError:
         print(f"{Fore.YELLOW}Ostrzeżenie: Nie można posortować adresów IP. Sortowanie alfabetyczne.{Style.RESET_ALL}")
         final_ip_list.sort()
-
+    arp_only_ips = arp_ips_set - ping_ips_set
     # --- ZMODYFIKOWANO: Przyspieszenie ZGADYWANIA OS (nazwy już mamy) ---
     os_cache: Dict[str, str] = {}
     total_tasks = len(final_ip_list) # Teraz tylko zgadywanie OS
@@ -1874,6 +2020,10 @@ def wyswietl_rozszerzona_tabele_urzadzen(
             if is_local_host: oznaczenia.append("(Ty)")
             if is_gateway: oznaczenia.append("(Brama)")
             oznaczenie_str = " ".join(oznaczenia)
+            # (Opcjonalnie) Dodaj oznaczenie dla hostów tylko z ARP
+            if ip in arp_only_ips:
+                oznaczenia.append("(ARP Only)")
+            oznaczenie_str = " ".join(oznaczenia)
 
             nazwa_finalna = nazwa_hosta_raw
             if oznaczenie_str:
@@ -1901,16 +2051,19 @@ def wyswietl_rozszerzona_tabele_urzadzen(
                     line_parts.append(formatted_data)
 
             line_format = ' '.join(line_parts)
-
-            # Logika kolorowania bez zmian
-            if nazwa_hosta_raw != "Nieznana" and nazwa_hosta_raw != "Błąd":
-                print(f"{Fore.CYAN}{line_format}{Style.RESET_ALL}")
-            elif producent_oui != "Nieznany":
-                print(f"{Fore.GREEN}{line_format}{Style.RESET_ALL}")
-            elif nazwa_hosta_raw == "Błąd" or zgadniety_os == "Błąd OS":
-                 print(f"{Fore.RED}{line_format}{Style.RESET_ALL}")
+            # (Opcjonalnie) Zmodyfikuj logikę kolorowania dla hostów tylko z ARP
+            if ip in arp_only_ips:
+                print(f"{Fore.MAGENTA}{line_format}{Style.RESET_ALL}") # Np. na fioletowo
             else:
-                print(line_format)
+                # Logika kolorowania bez zmian
+                if nazwa_hosta_raw != "Nieznana" and nazwa_hosta_raw != "Błąd":
+                    print(f"{Fore.CYAN}{line_format}{Style.RESET_ALL}")
+                elif producent_oui != "Nieznany":
+                    print(f"{Fore.GREEN}{line_format}{Style.RESET_ALL}")
+                elif nazwa_hosta_raw == "Błąd" or zgadniety_os == "Błąd OS":
+                    print(f"{Fore.RED}{line_format}{Style.RESET_ALL}")
+                else:
+                    print(line_format)
 
     print(separator_line)
     return os_cache
@@ -2290,7 +2443,6 @@ def pobierz_i_zweryfikuj_prefiks() -> Optional[str]:
 
     return potwierdzony_prefiks
 
-
 # --- Główna część skryptu ---
 if __name__ == "__main__":
     # try:
@@ -2298,28 +2450,7 @@ if __name__ == "__main__":
 
 
         wszystkie_ip, glowny_ip = pobierz_wszystkie_aktywne_ip()
-# wuświetla ip aktywnych interfejsów
-        # if glowny_ip:
-        #      print(f"{Fore.GREEN}  -> Prawdopodobny główny adres IP (dostęp do sieci): {glowny_ip}{Style.RESET_ALL}")
-        # else:
-        #      print(f"{Fore.YELLOW}  -> Nie udało się jednoznacznie zidentyfikować głównego adresu IP (brak dostępu do sieci lub błąd).{Style.RESET_ALL}")
-
-
-        # if wszystkie_ip:
-        #     print("  Lista wszystkich wykrytych aktywnych interfejsów i ich adresów IP (IPv4):")
-        #     for interfejs, ips in wszystkie_ip.items():
-        #         print(f"    Interfejs: {interfejs}")
-        #         for ip in ips:
-        #             # Sprawdź, czy ten IP pasuje do zidentyfikowanego głównego IP
-        #             if ip == glowny_ip:
-        #                 print(f"      - IP: {ip} {Fore.GREEN}(Główny){Style.RESET_ALL}")
-        #             else:
-        #                 print(f"      - IP: {ip}")
-        # elif PSUTIL_AVAILABLE: # Wyświetl tylko jeśli psutil miał działać
-        #     print(f"{Fore.YELLOW}  Nie znaleziono aktywnych interfejsów z użytecznymi adresami IPv4 przez psutil.{Style.RESET_ALL}")
-
-
-            # Sprawdź obecność VPN lub inne i wyświetl ostrzeżenie tylko jeśli psutil jest dostępny
+        # Sprawdź obecność VPN lub inne i wyświetl ostrzeżenie tylko jeśli psutil jest dostępny
         if PSUTIL_AVAILABLE:
             # Użyj nowej nazwy funkcji
             if czy_aktywny_vpn_lub_podobny():
@@ -2354,11 +2485,14 @@ if __name__ == "__main__":
         # Skanowanie sieci
         print("\nRozpoczynanie skanowania sieci (ping)...")
         start_arp_time = time.time() # Przesunięto start timera tutaj
+        
         hosty_ktore_odpowiedzialy = pinguj_zakres(siec_prefix, DEFAULT_START_IP, DEFAULT_END_IP)
+        adresy_ip_z_arp = pobierz_ip_z_arp(siec_prefix)
+        polaczona_lista_ip = polacz_listy_ip(adresy_ip_z_arp, hosty_ktore_odpowiedzialy)
 
         # --- SKANOWANIE PORTÓW (NOWY KROK) ---
         wyniki_skanowania_portow: Dict[str, List[int]] = {}
-        if hosty_ktore_odpowiedzialy: # Skanuj porty tylko jeśli są hosty
+        if polaczona_lista_ip: # Skanuj porty tylko jeśli są hosty
             print("\nSkanowania wybranych portów dla aktywnych hostów...")
             # start_scan_time = time.time()
             # Użyjemy puli wątków do równoległego skanowania RÓŻNYCH hostów
@@ -2367,10 +2501,10 @@ if __name__ == "__main__":
             try:
                 with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_HOST_SCAN_WORKERS) as host_executor:
                     # Użyj funkcji skanuj_wybrane_porty_dla_ip, która sama używa wątków do portów
-                    future_to_ip_scan = {host_executor.submit(skanuj_wybrane_porty_dla_ip, ip): ip for ip in hosty_ktore_odpowiedzialy}
+                    future_to_ip_scan = {host_executor.submit(skanuj_wybrane_porty_dla_ip, ip): ip for ip in polaczona_lista_ip}
 
                     processed_hosts = 0
-                    total_hosts_to_scan = len(hosty_ktore_odpowiedzialy)
+                    total_hosts_to_scan = len(polaczona_lista_ip)
 
                     for future in concurrent.futures.as_completed(future_to_ip_scan):
                         ip_skanowany = future_to_ip_scan[future]
@@ -2392,23 +2526,9 @@ if __name__ == "__main__":
             print("\nBrak aktywnych hostów do skanowania portów.")
         # --- KONIEC SKANOWANIA PORTÓW ---
 
-        # # Wyświetlanie wyników z tabeli ARP
-        # pokaz_arp_z_nazwami(siec_prefix, hosty_ktore_odpowiedzialy, baza_oui, wyniki_skanowania_portow)
-
-        # wyswietl_rozszerzona_tabele_urzadzen(
-        #     siec_prefix,
-        #     hosty_ktore_odpowiedzialy,
-        #     baza_oui,
-        #     wyniki_skanowania_portow
-        # )
-
-
-
-                # --- NOWOŚĆ: Przygotuj listę IP do pobrania nazw i OS ---
-        # (Ta logika była wcześniej wewnątrz funkcji wyświetlających)
         host_ip = pobierz_ip_interfejsu()
         gateway_ip = pobierz_brame_domyslna()
-        ips_do_przetworzenia_set = set(hosty_ktore_odpowiedzialy)
+        ips_do_przetworzenia_set = set(polaczona_lista_ip)
         if host_ip and host_ip.startswith(siec_prefix):
             ips_do_przetworzenia_set.add(host_ip)
         if gateway_ip and gateway_ip.startswith(siec_prefix):
@@ -2437,7 +2557,7 @@ if __name__ == "__main__":
         # kolumny_wybrane_przez_uzytkownika = wybierz_kolumny_do_wyswietlenia()
         os_cache_wyniki = wyswietl_rozszerzona_tabele_urzadzen(
             siec_prefix,
-            hosty_ktore_odpowiedzialy, # Lub final_ip_list_do_przetworzenia?
+            polaczona_lista_ip, # Lub final_ip_list_do_przetworzenia?
             baza_oui,
             wyniki_skanowania_portow,
             nazwy_hostow_cache, # <-- Przekaż cache nazw
