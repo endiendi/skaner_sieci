@@ -14,6 +14,29 @@ import threading
 import errno
 from typing import List, Tuple, Optional, Dict, Any
 import shlex
+import webbrowser
+import html
+import json
+
+from dataclasses import dataclass, field
+
+@dataclass
+class DeviceInfo:
+    ip: str
+    mac: Optional[str] = None
+    hostname: str = "Nieznana"
+    open_ports: List[int] = field(default_factory=list)
+    guessed_os: str = "Nieznany OS"
+    oui_vendor: str = "Nieznany"
+    is_host: bool = False
+    is_gateway: bool = False
+    source: str = "Nieznany" # Np. 'ping', 'arp', 'both'
+    hostname_resolved_dns: Optional[str] = None # Nazwa z DNS/NetBIOS
+    hostname_from_file: Optional[str] = None
+    open_custom_server_ports: List[int] = field(default_factory=list) # Otwarte porty z pliku port_serwer.txt
+    dns_lookup_raw_result: str = "Nieznana" # Przechowa oryginalny wynik z gethostbyaddr/getnameinfo
+
+
 
 #pip uninstall psutil
 #pip install psutil
@@ -47,44 +70,6 @@ def zainstaluj_pakiet(nazwa_pakietu: str) -> bool:
     except Exception as e:
         print(f"{Fore.RED}Nieoczekiwany błąd podczas próby instalacji '{nazwa_pakietu}': {e}{Style.RESET_ALL}")
         return False
-
-def sprawdz_i_zainstaluj_biblioteke(nazwa_pakietu: str, nazwa_importu: str, cel: str) -> bool:
-    """Sprawdza dostępność biblioteki, importuje ją lub oferuje instalację."""
-    try:
-        globals()[nazwa_importu] = __import__(nazwa_importu)
-        # Dodatkowe importy specyficzne dla biblioteki (jeśli są potrzebne globalnie)
-        if nazwa_pakietu == "requests":
-            from requests.adapters import HTTPAdapter
-            from urllib3.util.retry import Retry
-            globals()['HTTPAdapter'] = HTTPAdapter
-            globals()['Retry'] = Retry
-        elif nazwa_pakietu == "colorama":
-            from colorama import Fore, Style, init
-            globals()['Fore'] = Fore
-            globals()['Style'] = Style
-            globals()['init'] = init
-            init(autoreset=True)
-        return True
-    except ImportError:
-        print("\n" + f"{Style.BRIGHT}-{Style.RESET_ALL}" * 70)
-        print(f"\n{Fore.YELLOW}Ostrzeżenie: Biblioteka '{nazwa_pakietu}' nie jest zainstalowana.{Style.RESET_ALL}")
-        print(f"{Fore.YELLOW}{cel}{Style.RESET_ALL}")
-        try:
-            odpowiedz = input(f"{Fore.YELLOW}Czy chcesz spróbować zainstalować ją teraz? (t/n): {Style.RESET_ALL}").lower().strip()
-            if odpowiedz.startswith('t') or odpowiedz.startswith('y'):
-                if zainstaluj_pakiet(nazwa_pakietu):
-                    print(f"{Fore.CYAN}Instalacja zakończona. Uruchom skrypt ponownie, aby włączyć funkcje zależne od '{nazwa_pakietu}'.{Style.RESET_ALL}")
-                    sys.exit(0) # Zakończ skrypt
-                else:
-                    print(f"Instalacja nie powiodła się. Kontynuowanie bez funkcji '{nazwa_pakietu}'.")
-            else:
-                print(f"Instalacja pominięta. Kontynuowanie bez funkcji '{nazwa_pakietu}'.")
-        except (EOFError, KeyboardInterrupt):
-             print(f"\nInstalacja pominięta. Kontynuowanie bez funkcji '{nazwa_pakietu}'.")
-        print(f"{Style.BRIGHT}-{Style.RESET_ALL}" * 70)
-        return False
-
-# --- Sprawdzanie i importowanie bibliotek zewnętrznych ---
 
 # 1. Sprawdzanie Colorama
 try:
@@ -194,6 +179,8 @@ WINDOWS_OEM_ENCODING = 'cp852' # Częste kodowanie OEM w Polsce, można dostosow
 MAX_HOSTNAME_WORKERS: int = 10 # Liczba wątków do równoległego pobierania nazw hostów
 MAX_PING_WORKERS: int = 3 # <--- Dodaj: Maksymalna liczba równoległych pingów im więcej tym mniejsza dokładność zależnie od komputera
 DEFAULT_LINE_WIDTH: int = 125 # Zdefiniuj stałą szerokość linii
+NAZWY_MAC_PLIK: str = "mac_nazwy.txt" # Nazwa pliku z niestandardowymi nazwami MAC
+NIESTANDARDOWE_PORTY_SERWERA_PLIK: str = "port_serwer.txt" # Nazwa pliku dla niestandardowych portów serwera
 INPUT_TIMEOUT_SECONDS = 10 # Czas w sekundach na reakcję użytkownika
 MAX_PORT_SCAN_WORKERS: int = 10 # Dostosuj wg potrzeb Maksymalna liczba wątków do skanowania portów dla JEDNEGO hosta
 TIMEOUT_SENTINEL = object() # Unikalny obiekt sygnalizujący timeout
@@ -217,8 +204,9 @@ OPISY_PORTOW: Dict[int, str] = {
     3389: "RDP (Remote Desktop Protocol)",
     5432: "PostgreSQL Database",
     5900: "VNC (Virtual Network Computing)",
-    8000: "Alternatywny HTTP (często serwery deweloperskie)",
-    8080: "Alternatywny HTTP (często proxy lub serwery web)",
+    8000: "Alternatywny HTTP",
+    8001: "Alternatywny HTTPS",
+    8080: "Alternatywny HTTPS (często proxy lub serwery web)",
     8123: "Home Assistant (HTTPS)", # Dodano opis
     4357: "Home Assistant (HTTP)", # Dodano opis
     8443: "Alternatywny HTTPS",
@@ -251,7 +239,9 @@ OPISY_PORTOW: Dict[int, str] = {
     8989: "Jellyfin (HTTPS)", # Domyślny port HTTPS, może być skonfigurowany
     32400: "Plex Media Server",
     8080: "Audiobookshelf (HTTP) - Domyślny, ale konfigurowalny",
+    13378: "Audiobookshelf (HTTP) - Domyślny, ale konfigurowalny",
     8443: "Audiobookshelf (HTTPS) - Jeśli skonfigurowano SSL",
+    
     # Inne podobne usługi i ich domyślne porty
 }
 
@@ -473,6 +463,92 @@ OS_FILTERS: List[Dict[str, Any]] = [
     },
     # Reguły zapasowe (UNKNOWN_PORTS, UNKNOWN_NO_PORTS) są obsługiwane na końcu, jeśli żaden filtr nie pasuje.
 ]
+
+
+def sprawdz_i_utworz_plik(nazwa_pliku: str, przykladowa_tresc: Optional[str] = None) -> None:
+    """
+    Sprawdza, czy plik istnieje w tym samym katalogu co skrypt.
+    Jeśli plik nie istnieje, tworzy go i opcjonalnie dodaje przykładową treść.
+
+    Args:
+        nazwa_pliku: Nazwa pliku do sprawdzenia/utworzenia.
+        przykladowa_tresc: Opcjonalna treść do zapisania w nowym pliku.
+    """
+    # Uzyskaj ścieżkę do katalogu, w którym znajduje się bieżący skrypt
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    # Połącz ścieżkę katalogu z nazwą pliku
+    pelna_sciezka_pliku = os.path.join(script_dir, nazwa_pliku)
+
+    green_color = Fore.GREEN if COLORAMA_AVAILABLE else ""
+    yellow_color = Fore.YELLOW if COLORAMA_AVAILABLE else ""
+    red_color = Fore.RED if COLORAMA_AVAILABLE else ""
+    reset_color = Style.RESET_ALL if COLORAMA_AVAILABLE else ""
+
+    if not os.path.exists(pelna_sciezka_pliku):
+        try:
+            with open(pelna_sciezka_pliku, "w", encoding="utf-8") as f:
+                if przykladowa_tresc:
+                    f.write(przykladowa_tresc)
+            print(f"{green_color}Plik '{nazwa_pliku}' został pomyślnie utworzony w '{script_dir}'.{reset_color}")
+            if przykladowa_tresc:
+                print(f"{green_color}Dodano przykładową treść.{reset_color}")
+        except IOError as e:
+            print(f"{red_color}Błąd: Nie można utworzyć pliku '{nazwa_pliku}' w '{script_dir}'. Powód: {e}{reset_color}")
+        except Exception as e:
+            print(f"{red_color}Nieoczekiwany błąd podczas tworzenia pliku '{nazwa_pliku}': {e}{reset_color}")
+    else:
+        # Komunikat o istnieniu pliku jest opcjonalny, można go usunąć, jeśli nie jest potrzebny przy każdym wczytaniu
+        # print(f"{yellow_color}Plik '{nazwa_pliku}' już istnieje w '{script_dir}'.{reset_color}")
+        pass # Plik istnieje, nic nie rób
+
+def pobierz_tabele_arp() -> Optional[str]:
+    """
+    Pobiera tabelę ARP dla danego systemu operacyjnego, łącząc najlepsze cechy
+    i eliminując wady poprzednich wersji.
+
+    Używa `shell=False` dla bezpieczeństwa i lepszej praktyki.
+    Poprawnie obsługuje kodowanie dla różnych systemów (np. cp852 dla Windows).
+    Zapewnia szczegółową obsługę błędów, w tym FileNotFoundError.
+
+    Returns:
+        str: Zawartość tabeli ARP jako string, lub None w przypadku błędu.
+    """
+    system_os = platform.system().lower()
+    cmd_list: List[str] = []
+    # Użyj globalnie zdefiniowanych stałych dla kodowania
+    encoding_to_use: str = DEFAULT_ENCODING # Domyślnie utf-8
+
+    if system_os == "windows":
+        cmd_list = ["arp", "-a"]
+        encoding_to_use = WINDOWS_OEM_ENCODING
+    elif system_os == "linux":
+        cmd_list = ["ip", "-4", "neighbor"]
+        # Dla Linuxa, DEFAULT_ENCODING (zazwyczaj utf-8) jest odpowiednie
+    elif system_os == "darwin":  # macOS
+        cmd_list = ["arp", "-an"]
+        # Dla macOS, DEFAULT_ENCODING (zazwyczaj utf-8) jest odpowiednie
+    else:
+        print(f"{Fore.YELLOW}Nieobsługiwany system operacyjny dla pobierania tabeli ARP: {system_os}{Style.RESET_ALL}")
+        return None
+
+    try:
+        # Użycie shell=False i przekazanie polecenia jako listy jest bezpieczniejsze.
+        # stderr=subprocess.STDOUT przechwytuje również błędy do e.output.
+        process_output_bytes = subprocess.check_output(cmd_list, stderr=subprocess.STDOUT)
+        wynik = process_output_bytes.decode(encoding_to_use, errors='ignore')
+        return wynik
+    except subprocess.CalledProcessError as e:
+        # e.output zawiera stdout i stderr, jeśli stderr=subprocess.STDOUT
+        error_details = e.output.decode(encoding_to_use, errors='ignore').strip() if e.output else str(e)
+        print(f"{Fore.RED}Błąd podczas wykonywania polecenia '{' '.join(cmd_list)}': {error_details}{Style.RESET_ALL}")
+        return None
+    except FileNotFoundError:
+        # cmd_list[0] to nazwa samego polecenia
+        print(f"{Fore.RED}Błąd: Polecenie '{cmd_list[0]}' nie znalezione. Upewnij się, że jest zainstalowane i w ścieżce systemowej (PATH).{Style.RESET_ALL}")
+        return None
+    except Exception as e:
+        print(f"{Fore.RED}Nieoczekiwany błąd podczas pobierania tabeli ARP za pomocą '{' '.join(cmd_list)}': {e}{Style.RESET_ALL}")
+        return None
 
 
 def wybierz_kolumny_do_wyswietlenia(
@@ -1323,70 +1399,6 @@ def czy_aktywny_vpn_lub_podobny() -> bool:
         print(f"{Fore.YELLOW}Ostrzeżenie: Wystąpił błąd podczas sprawdzania interfejsów sieciowych dla VPN: {e}{Style.RESET_ALL}")
         return False
 
-def pobierz_tabele_arp():
-    """
-    Pobiera tabelę ARP dla danego systemu operacyjnego.
-
-    Returns:
-        str: Zawartość tabeli ARP lub None w przypadku błędu.
-    """
-    try:
-        if platform.system().lower() == "windows":
-            wynik = subprocess.check_output("arp -a", shell=True, encoding="utf-8", errors='ignore')
-        elif platform.system().lower() == "linux":
-            wynik = subprocess.check_output("ip -4 neighbor", shell=True, encoding="utf-8", errors='ignore')
-        elif platform.system().lower() == "darwin":  # macOS
-            wynik = subprocess.check_output("arp -an", shell=True, encoding="utf-8", errors='ignore')
-        else:
-            print("Nieobsługiwany system operacyjny.")
-            return None
-        return wynik
-    except subprocess.CalledProcessError as e:
-        print(f"Błąd podczas pobierania tabeli ARP: {e}")
-        return None
-    except Exception as e:
-        print(f"Inny błąd podczas pobierania tabeli ARP: {e}")
-        return None
-
-def parsuj_tabele_arp(wynik_arp: Optional[str], siec_prefix: str) -> Dict[str, str]:
-    """
-    Parsuje tabelę ARP i zwraca słownik mapujący adresy IP na adresy MAC
-    dla wpisów pasujących do podanego prefiksu sieciowego.
-
-    Args:
-        wynik_arp: Wyjście polecenia arp.
-        siec_prefix: Prefiks sieciowy do filtrowania (np. "192.168.0.").
-
-    Returns:
-        Słownik {ip (str): mac (str)}.
-    """
-    arp_map: Dict[str, str] = {}
-    if wynik_arp is None:
-        return arp_map
-
-    # Wzorce Regex skompilowane dla wydajności
-    ip_pattern = re.compile(r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})")
-    mac_pattern = re.compile(r"([0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2}[:-][0-9a-fA-F]{2})")
-
-    linie = wynik_arp.strip().splitlines()
-    for linia in linie:
-        # Ignoruj linie nagłówkowe lub puste
-        if not linia or linia.lower().startswith("interface") or linia.lower().startswith("internet address"):
-            continue
-
-        ip_match = ip_pattern.search(linia)
-        mac_match = mac_pattern.search(linia)
-
-        if ip_match and mac_match:
-            ip = ip_match.group(1)
-            mac = mac_match.group(1).upper().replace("-", ":") # Ujednolicenie formatu MAC
-
-            # Sprawdź, czy IP pasuje do prefiksu i nie jest multicastem
-            if ip.startswith(siec_prefix) and not any(ip.startswith(mp) for mp in MULTICAST_PREFIXES):
-                # Zapisz mapowanie IP -> MAC
-                arp_map[ip] = mac
-    return arp_map
-
 def _ping_single_ip(ip: str, system: str) -> Optional[str]:
     """
     Wysyła pojedynczy ping do podanego adresu IP.
@@ -1423,41 +1435,100 @@ def _ping_single_ip(ip: str, system: str) -> Optional[str]:
         print(f"{Fore.RED}Błąd podczas pingowania {ip}: {e}{Style.RESET_ALL}")
         return None # Inny błąd traktujemy jako nieudany ping
     
-def polacz_listy_ip(lista_arp: List[str], lista_ping: List[str]) -> List[str]:
+def polacz_listy_ip(
+    lista_arp: List[str],
+    lista_ping: List[str],
+    host_ip: Optional[str],
+    gateway_ip: Optional[str],
+    siec_prefix: str
+) -> List[str]:
     """
-    Łączy dwie listy adresów IP, usuwa duplikaty i sortuje wynikową listę.
+    Łączy adresy IP z ARP, ping, dodaje IP hosta i bramy (jeśli pasują do prefiksu),
+    usuwa duplikaty i sortuje wynikową listę.
 
     Args:
         lista_arp: Lista adresów IP uzyskanych z tabeli ARP.
         lista_ping: Lista adresów IP, które odpowiedziały na ping.
+        host_ip: Adres IP komputera lokalnego.
+        gateway_ip: Adres IP bramy domyślnej.
+        siec_prefix: Prefiks sieciowy do sprawdzania przynależności host_ip i gateway_ip.
 
     Returns:
-        Posortowana lista unikalnych adresów IP z obu list wejściowych.
+        Posortowana lista unikalnych adresów IP do przetworzenia.
     """
     # print("Łączenie list adresów IP z ARP i ping...")
 
-    # Połącz obie listy
-    polaczona_lista = lista_arp + lista_ping
+    unikalne_ip_set = set(lista_arp)
+    unikalne_ip_set.update(lista_ping)
+    if host_ip and host_ip.startswith(siec_prefix):
+        unikalne_ip_set.add(host_ip)
+    if gateway_ip and gateway_ip.startswith(siec_prefix):
+        unikalne_ip_set.add(gateway_ip)
 
-    # Usuń duplikaty używając set
-    unikalne_ip_set = set(polaczona_lista)
-
-    # Konwertuj z powrotem na listę
-    unikalne_ip_lista = list(unikalne_ip_set)
+    final_ip_list = list(unikalne_ip_set)
 
     # Sortuj listę numerycznie dla lepszej czytelności
     try:
         # Użyj ipaddress do poprawnego sortowania adresów IP
-        unikalne_ip_lista.sort(key=ipaddress.ip_address)
+        final_ip_list.sort(key=ipaddress.ip_address)
     except ValueError:
         # Fallback na sortowanie alfabetyczne, jeśli wystąpi błąd
         # (np. jeśli lista zawiera niepoprawne adresy IP)
         print(f"{Fore.YELLOW}Ostrzeżenie: Nie można posortować adresów IP numerycznie. Sortowanie alfabetyczne.{Style.RESET_ALL}")
-        unikalne_ip_lista.sort()
+        final_ip_list.sort()
 
     # print(f"Połączono i usunięto duplikaty. Łączna liczba unikalnych adresów IP: {len(unikalne_ip_lista)}")
-    return unikalne_ip_lista
+    return final_ip_list
 
+def skanuj_porty_rownolegle(
+    ips_do_skanowania: List[str],
+    max_host_workers: int = MAX_HOSTNAME_WORKERS # Użyj tej samej stałej co dla nazw/OS
+) -> Dict[str, List[int]]:
+    """
+    Skanuje wybrane porty (domyślnie z OPISY_PORTOW) dla listy adresów IP równolegle.
+
+    Args:
+        ips_do_skanowania: Lista adresów IP do przeskanowania.
+        max_host_workers: Maksymalna liczba wątków do skanowania RÓŻNYCH hostów.
+
+    Returns:
+        Słownik mapujący adres IP na listę otwartych portów.
+    """
+    wyniki_skanowania: Dict[str, List[int]] = {}
+    if not ips_do_skanowania:
+        print("\nBrak aktywnych hostów do skanowania portów.")
+        return wyniki_skanowania
+
+    print(f"\nSkanowanie wybranych portów dla {len(ips_do_skanowania)} aktywnych hostów...")
+    try:
+        actual_workers = min(max_host_workers, len(ips_do_skanowania))
+        if actual_workers <= 0: actual_workers = 1
+        with concurrent.futures.ThreadPoolExecutor(max_workers=actual_workers) as host_executor:
+            # Użyj funkcji skanuj_wybrane_porty_dla_ip, która sama używa wątków do portów
+            future_to_ip_scan = {host_executor.submit(skanuj_wybrane_porty_dla_ip, ip): ip for ip in ips_do_skanowania}
+
+            # Reszta logiki z pętlą for as_completed... (bez zmian)
+            # ... (skopiuj tutaj pętlę for future in concurrent.futures.as_completed...) ...
+            # --- Początek skopiowanej pętli ---
+            processed_hosts = 0
+            total_hosts_to_scan = len(ips_do_skanowania)
+            for future in concurrent.futures.as_completed(future_to_ip_scan):
+                ip_skanowany = future_to_ip_scan[future]
+                try:
+                    lista_otwartych = future.result()
+                    wyniki_skanowania[ip_skanowany] = lista_otwartych
+                except Exception as exc:
+                    print(f'\n{Fore.YELLOW}Skanowanie portów dla {ip_skanowany} zgłosiło wyjątek: {exc}{Style.RESET_ALL}')
+                    wyniki_skanowania[ip_skanowany] = [] # Zapisz pustą listę w razie błędu
+                processed_hosts += 1
+                print(f"\rPostęp skanowania portów: {processed_hosts}/{total_hosts_to_scan} hostów sprawdzonych...", end="")
+            # --- Koniec skopiowanej pętli ---
+    except KeyboardInterrupt:
+        obsluz_przerwanie_uzytkownika() # Obsługa przerwania
+    finally:
+        print("\r" + " " * 70 + "\r", end="") # Wyczyść linię postępu
+    print("Skanowanie portów zakończone.")
+    return wyniki_skanowania
 
 def pinguj_zakres(siec_prefix: str, start_ip: int, end_ip: int) -> List[str]:
     """
@@ -1545,38 +1616,6 @@ def pobierz_nazwe_hosta(ip: str) -> str:
     finally:
         socket.setdefaulttimeout(original_timeout) # Przywróć domyślny timeout
     return nazwa_wyswietlana
-
-def pobierz_tabele_arp() -> Optional[str]:
-    """
-    Pobiera tabelę ARP dla danego systemu operacyjnego.
-
-    Returns:
-        str: Zawartość tabeli ARP lub None w przypadku błędu.
-    """
-    try:
-        system = platform.system().lower()
-        if system == "windows":
-            # Użycie kodowania cp852 (lub innego OEM) może być konieczne dla polskich znaków
-            # errors='ignore' pomoże uniknąć błędów dekodowania
-            wynik = subprocess.check_output("arp -a", shell=True, encoding='cp852', errors='ignore')
-        elif system == "linux":
-            wynik = subprocess.check_output("ip -4 neighbor", shell=True, encoding="utf-8", errors='ignore')
-        elif system == "darwin":  # macOS
-            wynik = subprocess.check_output("arp -an", shell=True, encoding="utf-8", errors='ignore')
-        else:
-            print(f"Nieobsługiwany system operacyjny: {system}")
-            return None
-        return wynik
-    except subprocess.CalledProcessError as e:
-        print(f"Błąd podczas pobierania tabeli ARP: {e}")
-        return None
-    except FileNotFoundError:
-        cmd = "arp -a" if platform.system().lower() == "windows" else "ip -4 neighbor" if platform.system().lower() == "linux" else "arp -an"
-        print(f"Błąd: Polecenie '{cmd.split()[0]}' nie znalezione.")
-        return None
-    except Exception as e:
-        print(f"Inny błąd podczas pobierania tabeli ARP: {e}")
-        return None
 
 def parsuj_tabele_arp(wynik_arp: Optional[str], siec_prefix: str) -> Dict[str, str]:
     """
@@ -1783,293 +1822,6 @@ def pobierz_mac_adres(ip_address: Optional[str]) -> Optional[str]:
         print(f"Nieoczekiwany błąd podczas pobierania adresu MAC: {e}")
         return None
 
-def pokaz_arp_z_nazwami(
-    siec_prefix: str,
-    hosty_odpowiadajace: List[str],
-    baza_oui: Dict[str, str],
-    wyniki_portow: Dict[str, List[int]],
-    hostname_cache: Dict[str, str] # <-- NOWY PARAMETR
-) -> None:
-    """
-    Wyświetla listę urządzeń, używając przekazanych nazw hostów.
-    (Reszta opisu bez zmian)
-    Args:
-        siec_prefix: Prefiks sieciowy.
-        hosty_odpowiadajace: Lista IP, które odpowiedziały.
-        baza_oui: Słownik OUI.
-        wyniki_portow: Słownik otwartych portów.
-        hostname_cache: Słownik z wcześniej pobranymi nazwami hostów {ip: nazwa}.
-    """
-    # print("\nOdczytywanie lokalnej tabeli ARP...") # Usunięto pobieranie nazw
-    wynik_arp = pobierz_tabele_arp()
-    arp_map: Dict[str, str] = {} # Zapewnij, że arp_map jest zawsze zdefiniowane
-    if wynik_arp is None:
-        print(f"{Fore.YELLOW}Ostrzeżenie: Nie można pobrać tabeli ARP. Adresy MAC mogą być niedostępne.{Style.RESET_ALL}")
-    else:
-        arp_map = parsuj_tabele_arp(wynik_arp, siec_prefix) # arp_map jest typu Dict[str, str]
-
-    host_ip = pobierz_ip_interfejsu()
-    host_mac = pobierz_mac_adres(host_ip) if host_ip else None
-    gateway_ip = pobierz_brame_domyslna()
-
-    # --- Przygotowanie listy IP do wyświetlenia (bez zmian) ---
-    ips_do_wyswietlenia_set = set(hosty_odpowiadajace)
-    if host_ip and host_ip.startswith(siec_prefix):
-        ips_do_wyswietlenia_set.add(host_ip)
-    if gateway_ip and gateway_ip.startswith(siec_prefix):
-        ips_do_wyswietlenia_set.add(gateway_ip)
-
-    final_ip_list = list(ips_do_wyswietlenia_set)
-    try:
-        final_ip_list.sort(key=lambda ip: list(map(int, ip.split('.'))))
-    except ValueError:
-        print(f"{Fore.YELLOW}Ostrzeżenie: Nie można posortować adresów IP. Sortowanie alfabetyczne.{Style.RESET_ALL}")
-        final_ip_list.sort()
-
-    # --- USUNIĘTO: Przyspieszenie pobierania nazw hostów ---
-    # Teraz nazwy są przekazywane w hostname_cache
-
-    # --- Wyświetlanie tabeli (logika bez zmian, ale używa hostname_cache) ---
-    lp_width = len(str(len(final_ip_list))) + 1 if final_ip_list else 3
-    host_port_width = 45
-    total_width = DEFAULT_LINE_WIDTH
-    separator_line = "-" * total_width
-
-    print("\n")
-    wyswietl_tekst_w_linii("-", total_width, "Znalezione urządzenia w sieci (Podstawowa Tabela)", Fore.LIGHTYELLOW_EX, Fore.LIGHTCYAN_EX)
-    print(f"{Fore.LIGHTYELLOW_EX}{'Lp.':<{lp_width}} {'Adres IP':<16} {'Adres MAC':<20} {'Nazwa Hostu / Porty':<{host_port_width}} {'Producent (OUI)':<35}{Style.RESET_ALL}")
-    print(separator_line)
-
-    if not final_ip_list:
-        print(f"{Fore.YELLOW}Nie znaleziono żadnych aktywnych urządzeń w zakresie lub nie udało się ich przetworzyć.{Style.RESET_ALL}")
-    else:
-        for idx, ip in enumerate(final_ip_list, start=1):
-            # Pobierz MAC z mapy ARP lub użyj MAC hosta, jeśli to host lokalny
-            mac = arp_map.get(ip) # Może być None
-            if ip == host_ip and host_mac:
-                mac = host_mac
-            mac_display = mac if mac else "Nieznany MAC" # Użyj "Nieznany MAC", jeśli mac jest None
-
-            # --- UŻYJ hostname_cache ---
-            nazwa_hosta_raw = hostname_cache.get(ip, "Nieznana") # Pobierz z cache
-            # --------------------------
-
-            otwarte_porty_dla_ip = wyniki_portow.get(ip, [])
-            porty_str = f" [{', '.join(map(str, otwarte_porty_dla_ip))}]" if otwarte_porty_dla_ip else ""
-            nazwa_z_portami = f"{nazwa_hosta_raw}{porty_str}"
-
-            producent_oui = pobierz_nazwe_producenta_oui(mac_display, baza_oui)
-            is_local_host = (ip == host_ip)
-            is_gateway = (ip == gateway_ip)
-            oznaczenia = []
-            if is_local_host: oznaczenia.append("(Ty)")
-            if is_gateway: oznaczenia.append("(Brama)")
-            oznaczenie_str = " ".join(oznaczenia)
-
-            nazwa_finalna = nazwa_z_portami
-            if oznaczenie_str:
-                if nazwa_hosta_raw in ["Nieznana", "Błąd"] and not porty_str:
-                    nazwa_finalna = f"{ip} {oznaczenie_str}"
-                else:
-                    nazwa_finalna = f"{nazwa_z_portami} {oznaczenie_str}"
-
-            # line_format = f"{str(idx):<{lp_width}} {ip:<16} {mac:<20} {nazwa_finalna:<{host_port_width}.{host_port_width}} {producent_oui:<35.35}"
-            line_format = f"{str(idx):<{lp_width}} {ip:<16} {mac_display:<20} {nazwa_finalna:<{host_port_width}.{host_port_width}} {producent_oui:<35.35}" # Użyj mac_display
-            # Logika kolorowania bez zmian
-            if nazwa_hosta_raw != "Nieznana" and nazwa_hosta_raw != "Błąd":
-                print(f"{Fore.CYAN}{line_format}{Style.RESET_ALL}")
-            elif producent_oui != "Nieznany":
-                print(f"{Fore.GREEN}{line_format}{Style.RESET_ALL}")
-            elif nazwa_hosta_raw == "Błąd":
-                 print(f"{Fore.RED}{line_format}{Style.RESET_ALL}")
-            else:
-                print(line_format)
-
-    print(separator_line)
-
-
-# Zmodyfikowana funkcja wyswietl_rozszerzona_tabele_urzadzen
-def wyswietl_rozszerzona_tabele_urzadzen(
-    siec_prefix: str,
-    hosty_odpowiadajace: List[str],
-    baza_oui: Dict[str, str],
-    wyniki_portow: Dict[str, List[int]],
-    hostname_cache: Dict[str, str], # <-- NOWY PARAMETR
-    kolumny_do_wyswietlenia: List[str] = DOMYSLNE_KOLUMNY_DO_WYSWIETLENIA
-) -> Dict[str, str]:
-    """
-    Wyświetla rozszerzoną listę urządzeń, używając przekazanych nazw hostów.
-    (Reszta opisu bez zmian)
-    Args:
-        siec_prefix: Prefiks sieciowy.
-        hosty_odpowiadajace: Lista IP, które odpowiedziały.
-        baza_oui: Słownik OUI.
-        wyniki_portow: Słownik otwartych portów.
-        hostname_cache: Słownik z wcześniej pobranymi nazwami hostów {ip: nazwa}.
-        kolumny_do_wyswietlenia: Lista kluczy kolumn do wyświetlenia.
-    """
-    # print("\nOdczytywanie lokalnej tabeli ARP i zgadywanie systemów...") # Zmieniono opis
-    wynik_arp = pobierz_tabele_arp()
-    arp_map: Dict[str, str] = {}
-    if wynik_arp is None:
-        print(f"{Fore.YELLOW}Ostrzeżenie: Nie można pobrać tabeli ARP. Adresy MAC mogą być niedostępne.{Style.RESET_ALL}")
-    else:
-        arp_map = parsuj_tabele_arp(wynik_arp, siec_prefix)
-
-    host_ip = pobierz_ip_interfejsu()
-    host_mac = pobierz_mac_adres(host_ip) if host_ip else None
-    gateway_ip = pobierz_brame_domyslna()
-
-    # --- Przygotowanie listy IP do wyświetlenia (bez zmian) ---
-    # ips_do_wyswietlenia_set = set(hosty_odpowiadajace)
-    ping_ips_set = set(hosty_odpowiadajace)
-    arp_ips_set = {ip for ip in arp_map.keys() if ip.startswith(siec_prefix)}
-    ips_do_wyswietlenia_set = ping_ips_set.union(arp_ips_set)
-
-    if host_ip and host_ip.startswith(siec_prefix):
-        ips_do_wyswietlenia_set.add(host_ip)
-    if gateway_ip and gateway_ip.startswith(siec_prefix):
-        ips_do_wyswietlenia_set.add(gateway_ip)
-
-    final_ip_list = list(ips_do_wyswietlenia_set)
-    try:
-        final_ip_list.sort(key=lambda ip: list(map(int, ip.split('.'))))
-    except ValueError:
-        print(f"{Fore.YELLOW}Ostrzeżenie: Nie można posortować adresów IP. Sortowanie alfabetyczne.{Style.RESET_ALL}")
-        final_ip_list.sort()
-    arp_only_ips = arp_ips_set - ping_ips_set
-    # --- ZMODYFIKOWANO: Przyspieszenie ZGADYWANIA OS (nazwy już mamy) ---
-    os_cache: Dict[str, str] = {}
-    total_tasks = len(final_ip_list) # Teraz tylko zgadywanie OS
-    completed_tasks = 0
-
-    if final_ip_list:
-        print(f"Identyfikacja możliwych systemów operacyjnych dla wykrytych hostów. {total_tasks} adresów (max {MAX_HOSTNAME_WORKERS} wątków)...")
-        try:
-            # Upewnij się, że nie tworzymy więcej wątków niż zadań
-            actual_workers = min(MAX_HOSTNAME_WORKERS, total_tasks)
-            if actual_workers <= 0: actual_workers = 1 # Minimum 1 worker
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=actual_workers) as executor:
-                # TYLKO zadania zgadywania systemu
-                future_to_ip_os = {
-                    executor.submit(zgadnij_system_operacyjny, ip, otwarte_porty_znane=wyniki_portow.get(ip, [])): ip
-                    for ip in final_ip_list
-                }
-                # Usunięto future_to_ip_host
-                all_futures = future_to_ip_os # Teraz tylko OS futures
-
-                for future in concurrent.futures.as_completed(all_futures):
-                    ip = all_futures[future]
-                    try:
-                        result = future.result()
-                        # Usunięto sprawdzanie 'if future in future_to_ip_host'
-                        os_cache[ip] = result # Zapisz wynik OS
-                    except Exception as exc:
-                        # Usunięto task_type
-                        print(f'\n{Fore.YELLOW}Wątek zgadywania OS dla {ip} zgłosił wyjątek: {exc}{Style.RESET_ALL}')
-                        # Usunięto hostname_cache[ip] = "Błąd"
-                        os_cache[ip] = "Błąd OS" # Oznacz błąd OS
-                    completed_tasks += 1
-                    # Zaktualizowano tekst postępu
-                    print(f"\rPostęp zgadywania OS: {completed_tasks}/{total_tasks} zadań ukończonych...", end="")
-        except KeyboardInterrupt:
-            obsluz_przerwanie_uzytkownika()
-        finally:
-            print("\r" + " " * 70 + "\r", end="")
-    else:
-        print("Brak adresów IP do sprawdzenia.")
-    # ------------------------------------------------------------------
-
-    # --- Wyświetlanie tabeli (logika bez zmian, ale używa hostname_cache) ---
-    aktywne_kolumny = {k: v for k, v in KOLUMNY_TABELI.items() if k in kolumny_do_wyswietlenia}
-    total_width = sum(col["szerokosc"] for col in aktywne_kolumny.values()) + len(aktywne_kolumny) - 1
-    separator_line = "-" * total_width
-
-    print("\n")
-    wyswietl_tekst_w_linii("-", total_width, "Podsumowanie skanowania urządzeń w sieci", Fore.LIGHTGREEN_EX, Fore.LIGHTCYAN_EX)
-
-    header_parts = []
-    for col_key in kolumny_do_wyswietlenia:
-        if col_key in aktywne_kolumny:
-            col_config = aktywne_kolumny[col_key]
-            header_parts.append(f"{col_config['naglowek']:<{col_config['szerokosc']}}")
-    print(f"{Fore.LIGHTYELLOW_EX}{' '.join(header_parts)}{Style.RESET_ALL}")
-    print(separator_line)
-
-    if not final_ip_list:
-        print(f"{Fore.YELLOW}Nie znaleziono żadnych aktywnych urządzeń w zakresie lub nie udało się ich przetworzyć.{Style.RESET_ALL}")
-    else:
-        for idx, ip in enumerate(final_ip_list, start=1):
-            mac = arp_map.get(ip)
-            if ip == host_ip and host_mac: mac = host_mac
-            mac_display = mac if mac else "Nieznany MAC"
-
-            # --- UŻYJ hostname_cache ---
-            nazwa_hosta_raw = hostname_cache.get(ip, "Nieznana") # Pobierz z cache
-            # --------------------------
-            zgadniety_os = os_cache.get(ip, "Nieznany OS") # Pobierz z cache OS
-
-            otwarte_porty_dla_ip = wyniki_portow.get(ip, [])
-            porty_str = ', '.join(map(str, otwarte_porty_dla_ip)) if otwarte_porty_dla_ip else ""
-
-            producent_oui = pobierz_nazwe_producenta_oui(mac_display, baza_oui)
-            is_local_host = (ip == host_ip)
-            is_gateway = (ip == gateway_ip)
-            oznaczenia = []
-            if is_local_host: oznaczenia.append("(Ty)")
-            if is_gateway: oznaczenia.append("(Brama)")
-            oznaczenie_str = " ".join(oznaczenia)
-            # (Opcjonalnie) Dodaj oznaczenie dla hostów tylko z ARP
-            if ip in arp_only_ips:
-                oznaczenia.append("(ARP Only)")
-            oznaczenie_str = " ".join(oznaczenia)
-
-            nazwa_finalna = nazwa_hosta_raw
-            if oznaczenie_str:
-                if nazwa_hosta_raw in ["Nieznana", "Błąd"]:
-                    nazwa_finalna = f"{ip} {oznaczenie_str}"
-                else:
-                    nazwa_finalna = f"{nazwa_hosta_raw} {oznaczenie_str}"
-
-            row_data = {
-                "lp": str(idx),
-                "ip": ip,
-                "mac": mac_display,
-                "host": nazwa_finalna,
-                "porty": porty_str,
-                "os": zgadniety_os,
-                "oui": producent_oui
-            }
-
-            line_parts = []
-            for col_key in kolumny_do_wyswietlenia:
-                if col_key in aktywne_kolumny:
-                    col_config = aktywne_kolumny[col_key]
-                    data = row_data.get(col_key, "")
-                    formatted_data = f"{data:<{col_config['szerokosc']}.{col_config['szerokosc']}}"
-                    line_parts.append(formatted_data)
-
-            line_format = ' '.join(line_parts)
-            # (Opcjonalnie) Zmodyfikuj logikę kolorowania dla hostów tylko z ARP
-            if ip in arp_only_ips:
-                print(f"{Fore.MAGENTA}{line_format}{Style.RESET_ALL}") # Np. na fioletowo
-            else:
-                # Logika kolorowania bez zmian
-                if nazwa_hosta_raw != "Nieznana" and nazwa_hosta_raw != "Błąd":
-                    print(f"{Fore.CYAN}{line_format}{Style.RESET_ALL}")
-                elif producent_oui != "Nieznany":
-                    print(f"{Fore.GREEN}{line_format}{Style.RESET_ALL}")
-                elif nazwa_hosta_raw == "Błąd" or zgadniety_os == "Błąd OS":
-                    print(f"{Fore.RED}{line_format}{Style.RESET_ALL}")
-                else:
-                    print(line_format)
-
-    print(separator_line)
-    return os_cache
-
-
-
 def pobierz_prefiks_sieciowy() -> Optional[str]:
     """
     Pobiera prefiks sieciowy (pierwsze 3 oktety) aktywnego interfejsu.
@@ -2198,54 +1950,7 @@ def pobierz_baze_oui(url: str = OUI_URL, plik_lokalny: str = OUI_LOCAL_FILE,
         print(f"{Fore.RED}Inny błąd podczas przetwarzania bazy OUI: {e}{Style.RESET_ALL}")
         return odczytaj_baze_oui_z_pliku(plik_lokalny_path) # Zapasowo spróbuj plik
 
-
-
-def pobierz_baze_z_tekstu(baza_oui_txt):
-    """Parsuje tekst bazy OUI i zwraca słownik."""
-    baza_oui = {}
-    for linia in baza_oui_txt.splitlines():
-        # Pomijaj puste linie i komentarze
-        if not linia.strip() or linia.startswith("#"):
-            continue
-        # Dopasuj OUI (3 pary szesnastkowe oddzielone myślnikami) i nazwę organizacji
-        match = re.search(r"([0-9A-Fa-f]{2}-[0-9A-Fa-f]{2}-[0-9A-Fa-f]{2})\s+(.+)", linia)
-        if match:
-            oui, organizacja = match.groups()
-            baza_oui[oui.upper()] = organizacja.strip()
-    return baza_oui
-
 # Wymaga zainstalowanego psutil
-
-def pobierz_ip_przez_psutil() -> Optional[str]:
-    if not PSUTIL_AVAILABLE: # Użyj flagi zdefiniowanej na początku skryptu
-         print("Psutil niedostępny, nie można użyć tej metody.")
-         return None
-    try:
-        interfaces = psutil.net_if_addrs()
-        for if_name, snic_list in interfaces.items():
-            # Pomiń loopback i potencjalnie inne niechciane interfejsy
-            if if_name.lower().startswith('lo') or 'loopback' in if_name.lower():
-                continue
-            for snic in snic_list:
-                # Szukaj adresu IPv4, który nie jest link-local (169.254...)
-                if snic.family == socket.AF_INET:
-                    try:
-                        ip_addr = ipaddress.ip_address(snic.address)
-                        if not ip_addr.is_loopback and not ip_addr.is_link_local:
-                            # Zwróć pierwszy znaleziony "dobry" adres IPv4
-                            # UWAGA: To nadal może nie być adres domyślnej trasy!
-                            return snic.address
-                    except ValueError:
-                        continue # Ignoruj niepoprawne adresy
-        return None # Nie znaleziono odpowiedniego adresu
-    except Exception as e:
-        print(f"Błąd podczas pobierania IP przez psutil: {e}")
-        return None
-
-# Przykład użycia:
-# lokalny_ip_psutil = pobierz_ip_przez_psutil()
-# print(f"IP przez psutil: {lokalny_ip_psutil}")
-
 
 def pobierz_ip_interfejsu() -> Optional[str]: # Dodano type hint dla przejrzystości
     """Pobiera adres IP interfejsu używanego do połączeń wychodzących."""
@@ -2275,7 +1980,6 @@ def pobierz_ip_interfejsu() -> Optional[str]: # Dodano type hint dla przejrzysto
     except Exception as e:
         print(f"Nieoczekiwany błąd podczas pobierania IP interfejsu: {e}")
         return None
-
 
 def pobierz_baze_z_tekstu(baza_oui_txt: str) -> Dict[str, str]:
     """Parsuje tekst bazy OUI i zwraca słownik."""
@@ -2443,12 +2147,821 @@ def pobierz_i_zweryfikuj_prefiks() -> Optional[str]:
 
     return potwierdzony_prefiks
 
+def agreguj_informacje_o_urzadzeniach(
+    lista_ip_do_przetworzenia: List[str],
+    arp_map: Dict[str, str],
+    nazwy_hostow_cache: Dict[str, str],
+    wyniki_skanowania_portow: Dict[str, List[int]],
+    os_cache_wyniki: Dict[str, str],
+    baza_oui: Dict[str, str],
+    host_ip: Optional[str],
+    host_mac: Optional[str],
+    gateway_ip: Optional[str],
+    hosty_ktore_odpowiedzialy: List[str], # Potrzebne do określenia źródła
+    mac_nazwy_map: Dict[str, str],
+    configured_custom_server_ports_map: Dict[str, List[int]] # Zmieniono z List[int] na Dict[str, List[int]]
+) -> List[DeviceInfo]:
+    """Agreguje zebrane informacje o urządzeniach w listę obiektów DeviceInfo."""
+    lista_urzadzen: List[DeviceInfo] = []
+    print("Agregowanie informacji o urządzeniach...")
+
+    for ip in lista_ip_do_przetworzenia:
+        mac = arp_map.get(ip)
+        if ip == host_ip and host_mac: # Użyj MAC hosta, jeśli jest znany
+            mac = host_mac
+        
+        resolved_dns_name = nazwy_hostow_cache.get(ip, "Nieznana")
+        custom_name_from_file: Optional[str] = None
+        hostname_final = resolved_dns_name
+
+        if mac and mac in mac_nazwy_map:
+            custom_name_from_file = mac_nazwy_map[mac]
+            # Logika łączenia nazw
+            if resolved_dns_name == "Nieznana" or resolved_dns_name == "Błąd" or resolved_dns_name == ip:
+                hostname_final = custom_name_from_file
+            elif custom_name_from_file and custom_name_from_file != resolved_dns_name:
+                hostname_final = f"{resolved_dns_name} ({custom_name_from_file})"
+
+        vendor = pobierz_nazwe_producenta_oui(mac, baza_oui) if mac else "Nieznany"
+
+        # Określ źródło (czy odpowiedział na ping, czy był w ARP, czy oba)
+        source = "Nieznany"
+        in_ping = ip in hosty_ktore_odpowiedzialy
+        in_arp = ip in arp_map
+        if in_ping and in_arp:
+            source = "Ping+ARP"
+        elif in_ping:
+            source = "Ping"
+        elif in_arp:
+            source = "ARP"
+
+        # Pobierz wszystkie otwarte porty dla bieżącego IP
+        device_all_open_ports = wyniki_skanowania_portow.get(ip, [])
+        
+        # Identyfikuj, które z otwartych portów urządzenia są niestandardowymi portami serwera
+        open_custom_ports_on_device_for_this_ip: List[int] = []
+        all_configured_custom_ports_set = set()
+        if configured_custom_server_ports_map:
+            for proto_ports in configured_custom_server_ports_map.values():
+                all_configured_custom_ports_set.update(proto_ports)
+        
+        if all_configured_custom_ports_set:
+            open_custom_ports_on_device_for_this_ip = [
+                port for port in device_all_open_ports if port in all_configured_custom_ports_set
+            ]
+        # --- KONIEC POPRAWKI ---
+
+        device = DeviceInfo(
+            ip=ip,
+            mac=mac,
+            hostname=hostname_final,
+            open_ports=device_all_open_ports, # Zapisz wszystkie otwarte porty
+            guessed_os=os_cache_wyniki.get(ip, "Nieznany OS"),
+            oui_vendor=vendor,
+            is_host=(ip == host_ip),
+            is_gateway=(ip == gateway_ip),
+            source=source,
+            hostname_resolved_dns=resolved_dns_name if resolved_dns_name not in ["Nieznana", "Błąd", ip] else None,
+            hostname_from_file=custom_name_from_file,
+            open_custom_server_ports=open_custom_ports_on_device_for_this_ip,
+            dns_lookup_raw_result=resolved_dns_name # Zapisz surowy wynik z DNS/NetBIOS
+        )
+        lista_urzadzen.append(device)
+
+    print("Agregacja zakończona.")
+    return lista_urzadzen
+
+
+def wyswietl_tabele_urzadzen( 
+    lista_urzadzen: List[DeviceInfo],
+    kolumny_do_wyswietlenia: List[str],
+) -> None:
+    """
+    Wyświetla tabelę urządzeń na podstawie listy obiektów DeviceInfo.
+
+    Args:
+        lista_urzadzen: Lista obiektów DeviceInfo do wyświetlenia.
+        kolumny_do_wyswietlenia: Lista kluczy kolumn do wyświetlenia.
+    """
+    # --- Wyświetlanie tabeli ---
+    aktywne_kolumny = {k: v for k, v in KOLUMNY_TABELI.items() if k in kolumny_do_wyswietlenia}
+    # Oblicz szerokość i separator jak wcześniej...
+    # Upewnij się, że szerokość jest obliczana poprawnie
+    try:
+        # Oblicz sumę szerokości tylko dla aktywnych kolumn, które są w `kolumny_do_wyswietlenia`
+        total_width = sum(col["szerokosc"] for col_key, col in aktywne_kolumny.items() if col_key in kolumny_do_wyswietlenia)
+        # Dodaj liczbę separatorów (liczba aktywnych kolumn - 1)
+        num_separators = len([k for k in kolumny_do_wyswietlenia if k in aktywne_kolumny]) - 1
+        if num_separators > 0:
+            total_width += num_separators
+        if total_width <= 0: total_width = DEFAULT_LINE_WIDTH # Fallback
+    except Exception:
+        total_width = DEFAULT_LINE_WIDTH # Fallback w razie błędu
+    separator_line = "-" * total_width
+
+    print("\n")
+
+    wyswietl_tekst_w_linii("-", total_width, "Podsumowanie skanowania urządzeń w sieci", Fore.LIGHTGREEN_EX, Fore.LIGHTCYAN_EX) # Zmieniono kolor tytułu
+
+    # Wyświetl nagłówek...
+    header_parts = []
+    for col_key in kolumny_do_wyswietlenia:
+        if col_key in aktywne_kolumny:
+            col_config = aktywne_kolumny[col_key]
+            header_parts.append(f"{col_config['naglowek']:<{col_config['szerokosc']}}")
+    # Użyj COLORAMA_AVAILABLE do warunkowego kolorowania
+    if COLORAMA_AVAILABLE:
+        print(f"{Fore.LIGHTYELLOW_EX}{' '.join(header_parts)}{Style.RESET_ALL}")
+    else:
+        print(' '.join(header_parts))
+    print(separator_line)
+
+    if not lista_urzadzen:
+        print(f"{Fore.YELLOW}Nie znaleziono żadnych urządzeń do wyświetlenia.{Style.RESET_ALL}")
+    else:
+        for idx, device in enumerate(lista_urzadzen, start=1):
+            mac_display = device.mac if device.mac else "Nieznany MAC"
+            porty_str = ', '.join(map(str, device.open_ports)) if device.open_ports else ""
+
+            oznaczenia = []
+            if device.is_host: oznaczenia.append("(Ty)")
+            if device.is_gateway: oznaczenia.append("(Brama)")
+            if device.source == "ARP": oznaczenia.append("(ARP Only)") # Dodano oznaczenie ARP
+            oznaczenie_str = " ".join(oznaczenia)
+
+            nazwa_finalna = device.hostname
+            if oznaczenie_str:
+                if device.hostname in ["Nieznana", "Błąd"]:
+                    # nazwa_finalna = f"{device.ip} {oznaczenie_str}"
+                    nazwa_finalna = f"{device.hostname} {oznaczenie_str}"
+                else:
+                    nazwa_finalna = f"{device.hostname} {oznaczenie_str}"
+
+            row_data = {
+                "lp": str(idx),
+                "ip": device.ip,
+                "mac": mac_display,
+                "host": nazwa_finalna,
+                "porty": porty_str,
+                "os": device.guessed_os,
+                "oui": device.oui_vendor
+                # Można dodać 'source', jeśli jest w KOLUMNY_TABELI
+            }
+
+            line_parts = []
+            for col_key in kolumny_do_wyswietlenia:
+                if col_key in aktywne_kolumny:
+                    col_config = aktywne_kolumny[col_key]
+                    data = row_data.get(col_key, "")
+
+                    # Logika kolorowania z priorytetami
+                    color = Fore.WHITE # Domyślny kolor
+                    if device.dns_lookup_raw_result == "Błąd" or device.guessed_os == "Błąd OS":
+                        color = Fore.RED
+                    elif device.source == "ARP": # Tylko ARP (nie odpowiedział na ping)
+                        color = Fore.MAGENTA
+                    elif device.hostname_resolved_dns: # Nazwa rozwiązana przez DNS/NetBIOS (i nie jest to "Nieznana", "Błąd" ani IP)
+                        color = Fore.CYAN
+                    elif device.oui_vendor != "Nieznany": # Producent OUI znany
+                        color = Fore.GREEN
+
+                    # Przytnij dane do szerokości kolumny
+                    formatted_data = f"{data:<{col_config['szerokosc']}.{col_config['szerokosc']}}"
+
+                    # Dodaj kolor do części linii tylko jeśli colorama jest dostępne
+                    if COLORAMA_AVAILABLE:
+                         line_parts.append(f"{color}{formatted_data}{Style.RESET_ALL}")
+                    else:
+                         line_parts.append(formatted_data)
+
+            line_format = ' '.join(line_parts)
+            print(line_format) # Kolory są już w line_parts
+
+    print(separator_line)
+    # Funkcja już nic nie zwraca
+
+def zgadnij_systemy_rownolegle(
+    ips_do_sprawdzenia: List[str],
+    wyniki_portow: Dict[str, List[int]],
+    max_workers: int = MAX_HOSTNAME_WORKERS # Użyj tej samej stałej co dla nazw
+) -> Dict[str, str]:
+    """
+    Zgaduje systemy operacyjne dla podanej listy adresów IP równolegle.
+
+    Args:
+        ips_do_sprawdzenia: Lista adresów IP do sprawdzenia.
+        wyniki_portow: Słownik z wynikami skanowania portów {ip: [porty]}.
+        max_workers: Maksymalna liczba wątków do użycia.
+
+    Returns:
+        Słownik mapujący adres IP na przypuszczalny typ systemu (lub "Błąd OS").
+    """
+    os_cache: Dict[str, str] = {}
+    if not ips_do_sprawdzenia:
+        return os_cache
+
+    print(f"\nIdentyfikacja możliwych systemów operacyjnych dla {len(ips_do_sprawdzenia)} adresów...")
+    try:
+        total_tasks_os = len(ips_do_sprawdzenia)
+        for i, ip in enumerate(ips_do_sprawdzenia):
+            try:
+                os_cache[ip] = zgadnij_system_operacyjny(ip, otwarte_porty_znane=wyniki_portow.get(ip, []))
+            except Exception as exc:
+                print(f'\n{Fore.YELLOW}Błąd podczas zgadywania OS dla {ip}: {exc}{Style.RESET_ALL}')
+                os_cache[ip] = "Błąd OS" # Oznacz błąd
+            # Aktualizacja postępu (opcjonalnie, może spowalniać przy dużej liczbie IP)
+            print(f"\rPostęp zgadywania OS: {i + 1}/{total_tasks_os}...", end="")        
+    except KeyboardInterrupt:
+        obsluz_przerwanie_uzytkownika() # Lub rzuć dalej, jeśli obsługa jest wyżej
+    finally:
+        print("\r" + " " * 70 + "\r", end="") # Wyczyść linię postępu
+    print("Zgadywanie systemów zakończone.")
+    return os_cache
+
+def wczytaj_mac_nazwy_z_pliku(nazwa_pliku: str = NAZWY_MAC_PLIK) -> Dict[str, str]:
+    """
+    Wczytuje niestandardowe nazwy urządzeń przypisane do adresów MAC z pliku.
+    Plik powinien znajdować się w tej samej lokalizacji co skrypt.
+    Format linii w pliku: MAC_ADRES NAZWA_URZADZENIA (separatorem może być spacja, przecinek, średnik, tabulator).
+    Linie zaczynające się od '#' są ignorowane jako komentarze.
+    """
+    mac_nazwy_map: Dict[str, str] = {}
+        # Domyślna treść dla pliku mac_nazwy.txt
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    plik_path = os.path.join(script_dir, nazwa_pliku)
+
+    # Regex do ekstrakcji MAC adresu z początku linii
+    # Akceptuje MAC z dwukropkami, myślnikami lub bez separatorów.
+    mac_pattern_extract = re.compile(
+        r"^([0-9A-Fa-f]{2})[:-]?([0-9A-Fa-f]{2})[:-]?([0-9A-Fa-f]{2})[:-]?([0-9A-Fa-f]{2})[:-]?([0-9A-Fa-f]{2})[:-]?([0-9A-Fa-f]{2})"
+    )
+
+    # Domyślna treść dla pliku mac_nazwy.txt
+    przykladowa_tresc_mac_nazwy = """# Przykładowy plik z niestandardowymi nazwami dla adresów MAC.
+# Każda linia powinna zawierać adres MAC, a następnie nazwę.
+# Separatorami mogą być spacje lub tabulatory.
+# Linie zaczynające się od '#' są ignorowane jako komentarze.
+# Przykłady:
+# AA:BB:CC:DD:EE:FF MojSerwerNAS
+# 11-22-33-44-55-66 DrukarkaBiuro
+# 001122334455 KameraIP
+FF:FF:FF:FF:FF:FF PrzykładowaNazwa"""
+    sprawdz_i_utworz_plik(nazwa_pliku, przykladowa_tresc_mac_nazwy)
+
+    if not os.path.exists(plik_path):
+        print(f"{Fore.YELLOW}Informacja: Plik '{nazwa_pliku}' nie został znaleziony w lokalizacji skryptu. Nazwy niestandardowe nie zostaną wczytane.{Style.RESET_ALL}")
+        return mac_nazwy_map
+
+    print(f"Próba wczytania niestandardowych nazw urządzeń z pliku: '{plik_path}'...")
+    try:
+        with open(plik_path, "r", encoding="utf-8") as f:
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+                if not line or line.startswith("#"): # Ignoruj puste linie i komentarze
+                    continue
+
+                mac_match = mac_pattern_extract.match(line)
+                if mac_match:
+                    mac_parts = mac_match.groups()
+                    normalized_mac = ":".join(part.upper() for part in mac_parts)
+                    
+                    # Reszta linii po dopasowanym MAC to nazwa
+                    name_part = line[mac_match.end():].strip()
+                    # Usuń popularne separatory wiodące dla części z nazwą
+                    name_part = re.sub(r"^[ \t,;]+", "", name_part)
+
+                    if name_part:
+                        mac_nazwy_map[normalized_mac] = name_part
+                    else:
+                        print(f"{Fore.YELLOW}Ostrzeżenie w '{nazwa_pliku}' (linia {line_num}): Znaleziono MAC '{normalized_mac}', ale brak nazwy.{Style.RESET_ALL}")
+                else:
+                    print(f"{Fore.YELLOW}Ostrzeżenie w '{nazwa_pliku}' (linia {line_num}): Nie udało się sparsować MAC adresu. Linia: '{line}'{Style.RESET_ALL}")
+        
+        if mac_nazwy_map:
+            print(f"\n{Fore.GREEN}Pomyślnie wczytano {len(mac_nazwy_map)} niestandardowych nazw urządzeń.{Style.RESET_ALL}")
+        else:
+            print(f"{Fore.YELLOW}Nie wczytano żadnych niestandardowych nazw urządzeń z pliku '{nazwa_pliku}' (plik może być pusty lub zawierać tylko komentarze).{Style.RESET_ALL}")
+
+    except IOError as e:
+        print(f"{Fore.RED}Błąd odczytu pliku '{nazwa_pliku}': {e}{Style.RESET_ALL}")
+    except Exception as e:
+        print(f"{Fore.RED}Nieoczekiwany błąd podczas przetwarzania pliku '{nazwa_pliku}': {e}{Style.RESET_ALL}")
+
+    return mac_nazwy_map
+
+def wczytaj_niestandardowe_porty_serwera(nazwa_pliku: str = NIESTANDARDOWE_PORTY_SERWERA_PLIK) -> Dict[str, List[int]]:
+    """
+    Wczytuje listę niestandardowych portów serwera (HTTP/HTTPS) z pliku.
+    Plik powinien znajdować się w tej samej lokalizacji co skrypt.
+    Format: sekcje [http] lub [https], a pod nimi numery portów.
+    Linie zaczynające się od '#' są ignorowane jako komentarze.
+    """
+    niestandardowe_porty_map: Dict[str, List[int]] = {"http": [], "https": []}
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    plik_path = os.path.join(script_dir, nazwa_pliku)
+
+    # Domyślna treść dla pliku port_serwer.txt
+    domyslna_tresc_port_serwer = """# Przykładowy plik z niestandardowymi portami dla serwerów HTTP/HTTPS
+# Linie zaczynające się od '#' są ignorowane.
+[http]
+80
+[https]
+443"""
+    # Najpierw sprawdź/utwórz plik z domyślną treścią, jeśli nie istnieje
+    sprawdz_i_utworz_plik(nazwa_pliku, domyslna_tresc_port_serwer)
+
+    plik_path = os.path.join(script_dir, nazwa_pliku)
+
+    if not os.path.exists(plik_path):
+        print(f"{Fore.YELLOW}Informacja: Plik '{nazwa_pliku}' nie został znaleziony. Brak niestandardowych portów serwera do wczytania.{Style.RESET_ALL}")
+        return niestandardowe_porty_map
+
+    print(f"Próba wczytania niestandardowych portów serwera z pliku: '{plik_path}'...")
+    try:
+        current_section: Optional[str] = None # Dodano inicjalizację current_section
+        with open(plik_path, "r", encoding="utf-8") as f:
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+                if not line or line.startswith("#"):  # Ignoruj puste linie i komentarze
+                    continue
+                
+                section_match = re.match(r"^\[(https?)\]$", line, re.IGNORECASE)
+                if section_match:
+                    current_section = section_match.group(1).lower()
+                    if current_section not in niestandardowe_porty_map: # Powinno być 'http' lub 'https'
+                        print(f"{Fore.YELLOW}Ostrzeżenie w '{nazwa_pliku}' (linia {line_num}): Nieznana sekcja '{current_section}'. Oczekiwano [http] lub [https]. Pomijanie sekcji.{Style.RESET_ALL}")
+                        current_section = None # Ignoruj porty do czasu znalezienia prawidłowej sekcji
+                    continue
+
+                if current_section:
+                    try:
+                        port = int(line)
+                        if 1 <= port <= 65535:
+                            if port not in niestandardowe_porty_map[current_section]: # Unikaj duplikatów w danej sekcji
+                                niestandardowe_porty_map[current_section].append(port)
+                        else:
+                            print(f"{Fore.YELLOW}Ostrzeżenie w '{nazwa_pliku}' (linia {line_num}): Port '{port}' jest poza prawidłowym zakresem (1-65535) w sekcji '{current_section}'. Pomijanie.{Style.RESET_ALL}")
+                    except ValueError:
+                        print(f"{Fore.YELLOW}Ostrzeżenie w '{nazwa_pliku}' (linia {line_num}): Nie udało się sparsować numeru portu '{line}' w sekcji '{current_section}'. Pomijanie.{Style.RESET_ALL}")
+                else:
+                    print(f"{Fore.YELLOW}Ostrzeżenie w '{nazwa_pliku}' (linia {line_num}): Port '{line}' znaleziony poza sekcją [http] lub [https]. Pomijanie.{Style.RESET_ALL}")
+  
+
+        total_ports_loaded = len(niestandardowe_porty_map["http"]) + len(niestandardowe_porty_map["https"])
+        if total_ports_loaded > 0:
+            print(f"{Fore.GREEN}Pomyślnie wczytano {total_ports_loaded} niestandardowych portów serwera.{Style.RESET_ALL}")
+            if niestandardowe_porty_map["http"]:
+                niestandardowe_porty_map["http"].sort()
+                print(f"  HTTP porty: {niestandardowe_porty_map['http']}")
+            if niestandardowe_porty_map["https"]:
+                niestandardowe_porty_map["https"].sort()
+                print(f"  HTTPS porty: {niestandardowe_porty_map['https']}")
+        else:
+            print(f"{Fore.YELLOW}Nie wczytano żadnych niestandardowych portów serwera z pliku '{nazwa_pliku}'.{Style.RESET_ALL}")
+
+    except IOError as e:
+        print(f"{Fore.RED}Błąd odczytu pliku '{nazwa_pliku}': {e}{Style.RESET_ALL}")
+    except Exception as e:
+        print(f"{Fore.RED}Nieoczekiwany błąd podczas przetwarzania pliku '{nazwa_pliku}': {e}{Style.RESET_ALL}")
+
+    return niestandardowe_porty_map
+
+def rozdziel_nazwe_pliku(pelna_nazwa_pliku: str) -> tuple[str, str]:
+    """
+    Rozdziela pełną nazwę pliku na nazwę bazową i rozszerzenie.
+
+    Args:
+        pelna_nazwa_pliku: Pełna nazwa pliku (np. "raport_skanowania.html").
+
+    Returns:
+        Krotka zawierająca dwie wartości:
+        - Nazwa bazowa pliku (np. "raport_skanowania").
+        - Rozszerzenie pliku z kropką (np. ".html").
+          Jeśli plik nie ma rozszerzenia, druga wartość będzie pustym stringiem.
+    """
+    nazwa_bazowa, rozszerzenie = os.path.splitext(pelna_nazwa_pliku)
+    return nazwa_bazowa, rozszerzenie
+
+# Przykład użycia:
+nazwa_pliku_html = "raport_skanowania.html"
+nazwa, rozs = rozdziel_nazwe_pliku(nazwa_pliku_html)
+# print(f"Pełna nazwa: {nazwa_pliku_html}")
+# print(f"Nazwa bazowa: {nazwa}")
+# print(f"Rozszerzenie: {rozs}")
+
+nazwa_pliku_bez_rozszerzenia = "plik_bez_kropki"
+nazwa, rozs = rozdziel_nazwe_pliku(nazwa_pliku_bez_rozszerzenia)
+# print(f"\nPełna nazwa: {nazwa_pliku_bez_rozszerzenia}")
+# print(f"Nazwa bazowa: {nazwa}")
+# print(f"Rozszerzenie: {rozs}")
+
+nazwa_pliku_z_kropkami = "plik.z.wieloma.kropkami.txt"
+nazwa, rozs = rozdziel_nazwe_pliku(nazwa_pliku_z_kropkami)
+# print(f"\nPełna nazwa: {nazwa_pliku_z_kropkami}")
+# print(f"Nazwa bazowa: {nazwa}")
+# print(f"Rozszerzenie: {rozs}")
+
+plik_zaczynajacy_od_kropki = ".bashrc"
+nazwa, rozs = rozdziel_nazwe_pliku(plik_zaczynajacy_od_kropki)
+# print(f"\nPełna nazwa: {plik_zaczynajacy_od_kropki}")
+# print(f"Nazwa bazowa: {nazwa}") # Zwróci ".bashrc
+
+
+def zapisz_tabele_urzadzen_do_html(
+    lista_urzadzen: List[DeviceInfo],
+    kolumny_do_wyswietlenia: List[str],
+    opisy_portow_globalne: Dict[int, str],
+    configured_custom_server_ports_map: Dict[str, List[int]],
+    nazwa_pliku_html: str = "raport_skanowania.html", # Domyślna nazwa pliku
+    siec_prefix: Optional[str] = None # Opcjonalny prefiks sieci do dodania do nazwy pliku
+) -> Optional[str]: # Zmieniono typ zwracany na Optional[str]
+    """
+    Zapisuje tabelę urządzeń do pliku HTML z interaktywnym sortowaniem.
+    (Reszta opisu bez zmian)
+    """
+    nazwa_bazowa_pliku, rozszerzenie_pliku = rozdziel_nazwe_pliku(nazwa_pliku_html)
+
+    if siec_prefix:
+        prefix_dla_nazwy = siec_prefix.rstrip('.').replace('.', '_')
+        prefix_with_start_ip = f"{prefix_dla_nazwy}_{DEFAULT_START_IP}"
+        finalna_nazwa_pliku_html = f"{nazwa_bazowa_pliku}_{prefix_with_start_ip}{rozszerzenie_pliku}"
+    else:
+        finalna_nazwa_pliku_html = nazwa_pliku_html
+
+    aktywne_kolumny = {k: v for k, v in KOLUMNY_TABELI.items() if k in kolumny_do_wyswietlenia}
+    
+    # Konwertuj listę kolumn do formatu JSON dla JavaScript
+    kolumny_do_wyswietlenia_json = json.dumps(kolumny_do_wyswietlenia)
+
+
+    html_content = f"""
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Raport Skanowania Sieci</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }}
+        h1 {{ text-align: center; color: #333; }}
+        table {{ width: 100%; border-collapse: collapse; margin-top: 20px; box-shadow: 0 2px 15px rgba(0,0,0,0.1); background-color: #fff; }}
+        th, td {{ border: 1px solid #ddd; padding: 10px; text-align: left; }}
+        th {{ background-color: #4CAF50; color: white; text-align: center; position: relative; }} /* Dodano position: relative */
+        tr:nth-child(even) {{ background-color: #f9f9f9; }}
+        tr:hover {{ background-color: #f1f1f1; }}
+        a {{ color: #007bff; text-decoration: none; }}
+        a:hover {{ text-decoration: underline; }}
+        .legend-section {{ margin-top: 30px; padding: 15px; background-color: #fff; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+        .legend-section h2 {{ margin-top: 0; color: #4CAF50; }}
+        .legend-section ul {{ list-style-type: none; padding-left: 0; }}
+        .legend-section li {{ margin-bottom: 5px; }}
+        .device-row td {{ vertical-align: top; }}
+        
+        /* Style dla sortowania */
+        th.sortable-header {{ cursor: pointer; }}
+        th.sortable-header:hover {{ background-color: #3e8e41; }}
+        .sort-indicator {{
+            display: inline-block; /* Zmieniono na inline-block dla lepszego pozycjonowania */
+            margin-left: 5px;
+            color: #a0d0a0; /* Jaśniejszy kolor dla nieaktywnych wskaźników */
+            font-size: 0.9em;
+            /* Pozycjonowanie wskaźnika, jeśli chcemy go np. po prawej stronie */
+            /* position: absolute; */
+            /* right: 10px; */
+            /* top: 50%; */
+            /* transform: translateY(-50%); */
+        }}
+        .sort-indicator.active {{
+            color: white; /* Kolor aktywnego wskaźnika */
+        }}
+    </style>
+</head>
+<body>
+    <h1>Raport Skanowania Sieci</h1>
+    <table>
+        <thead>
+            <tr>
+"""
+    # Nagłówki tabeli
+    for col_key in kolumny_do_wyswietlenia:
+        if col_key in aktywne_kolumny:
+            col_config = aktywne_kolumny[col_key]
+            header_text = html.escape(col_config['naglowek'])
+            if col_key not in ["lp", "porty"]: # Kolumny Lp i Otwarte Porty nie są sortowalne
+                html_content += f"""
+                <th class="sortable-header" data-column-key="{html.escape(col_key)}">
+                    {header_text}
+                    <span class="sort-indicator">&#x25B2;&#x25BC;</span>
+                </th>
+"""
+            else:
+                html_content += f"                <th>{header_text}</th>\n"
+    html_content += """
+            </tr>
+        </thead>
+        <tbody id="devicesTableBody">
+"""
+
+     # Wiersze tabeli
+    for idx, device in enumerate(lista_urzadzen, start=1):
+        mac_display = device.mac if device.mac else "Nieznany MAC"
+        
+        # ... (logika generowania porty_html_output bez zmian) ...
+        open_ports_html_parts = []
+        if device.open_ports:
+            for port_num in sorted(list(device.open_ports)):
+                port_display_str = str(port_num)
+                if port_num in device.open_custom_server_ports: 
+                    protocol = "http" 
+                    if configured_custom_server_ports_map.get("https") and port_num in configured_custom_server_ports_map["https"]:
+                        protocol = "https"
+                    elif configured_custom_server_ports_map.get("http") and port_num in configured_custom_server_ports_map["http"]:
+                         protocol = "http"
+                    link_href = f"{protocol}://{html.escape(device.ip)}:{port_num}"
+                    port_display_str = f'<a href="{link_href}" target="_blank">{port_num}</a>'
+                open_ports_html_parts.append(port_display_str)
+        porty_html_output = ', '.join(open_ports_html_parts) if open_ports_html_parts else ""
+
+
+        oznaczenia = []
+        if device.is_host: oznaczenia.append("(Ty)")
+        if device.is_gateway: oznaczenia.append("(Brama)")
+        if device.source == "ARP": oznaczenia.append("(ARP Only)")
+        oznaczenie_str = " ".join(oznaczenia)
+
+        # --- UPROSZCZONA LOGIKA DLA NAZWY HOSTA W HTML (jak w terminalu) ---
+        # Zawsze używaj device.hostname jako podstawy
+        content_for_host_display = html.escape(device.hostname)
+
+        # Połącz podstawową treść z oznaczeniami
+        if oznaczenie_str:
+            nazwa_do_wyswietlenia_hosta = f"{content_for_host_display} {html.escape(oznaczenie_str)}"
+        else:
+            nazwa_do_wyswietlenia_hosta = content_for_host_display
+
+        row_data_base = {
+            "lp": str(idx),
+            "ip": html.escape(device.ip),
+            "mac": html.escape(mac_display),
+            "host": nazwa_do_wyswietlenia_hosta, # Ta wartość jest już gotowa do wyświetlenia
+            "porty": porty_html_output,
+            "os": html.escape(device.guessed_os),
+            "oui": html.escape(device.oui_vendor)
+        }
+
+        html_content += "            <tr class='device-row'>\n" # Dodajemy klasę dla JS
+        for col_key in kolumny_do_wyswietlenia:
+            if col_key in aktywne_kolumny:
+                data_to_display = row_data_base.get(col_key, "")
+                html_content += f"                <td>{data_to_display}</td>\n"
+        html_content += "            </tr>\n"
+    html_content += """
+        </tbody>
+    </table>
+"""
+    # Dodawanie legend (bez zmian)
+    html_content += """
+    <div class="legend-section">
+        <h2>Legenda Otwartych Portów</h2>
+        <ul>
+"""
+    wszystkie_otwarte_porty_set = set()
+    for dev_ports in lista_urzadzen:
+        wszystkie_otwarte_porty_set.update(dev_ports.open_ports)
+
+    if wszystkie_otwarte_porty_set:
+        posortowane_porty = sorted(list(wszystkie_otwarte_porty_set))
+        for port in posortowane_porty:
+            opis = opisy_portow_globalne.get(port, "Nieznana usługa")
+            html_content += f"            <li><b>Port {html.escape(str(port))}:</b> {html.escape(opis)}</li>\n"
+    else:
+        html_content += "            <li>Brak wykrytych otwartych portów.</li>\n"
+    html_content += """
+        </ul>
+    </div>
+"""
+    html_content += """
+    <div class="legend-section">
+        <h2>Legenda Skrótów Systemów/Urządzeń</h2>
+        <ul>
+"""
+    uzyte_skroty_os_set = {dev.guessed_os for dev in lista_urzadzen if dev.guessed_os}
+    if uzyte_skroty_os_set:
+        skrot_do_opisu_map: Dict[str, str] = {v["abbr"]: v["desc"] for k, v in OS_DEFINITIONS.items() if v.get("abbr") in uzyte_skroty_os_set}
+        for skrot_os in sorted(list(uzyte_skroty_os_set)):
+            opis_pelny = skrot_do_opisu_map.get(skrot_os, "Brak opisu w definicjach")
+            html_content += f"            <li><b>{html.escape(skrot_os)}:</b> {html.escape(opis_pelny)}</li>\n"
+    else:
+        html_content += "            <li>Brak zidentyfikowanych typów systemów/urządzeń.</li>\n"
+    html_content += """
+        </ul>
+    </div>
+
+    <script>
+        const displayedColumns = """ + kolumny_do_wyswietlenia_json + """;
+        let currentSortKey = null;
+        let currentSortDirection = 'none'; // 'asc', 'desc', 'none'
+
+        function getCellContentForSort(row, columnKey) {
+            const columnIndex = displayedColumns.indexOf(columnKey);
+            if (columnIndex === -1 || !row.cells[columnIndex]) {
+                return '';
+            }
+            let cellText = row.cells[columnIndex].textContent || row.cells[columnIndex].innerText || '';
+            cellText = cellText.trim();
+
+            if (columnKey === 'host') {
+                // Usuwa znaczniki typu (Ty), (Brama), (ARP Only) z końca dla sortowania
+                // Dzieli po pierwszym wystąpieniu " (" i bierze pierwszą część
+                const parts = cellText.split(" (");
+                cellText = parts[0].trim();
+            }
+            return cellText;
+        }
+
+        function compareIpAddresses(ipA, ipB) {
+            const partsA = ipA.split('.').map(Number);
+            const partsB = ipB.split('.').map(Number);
+            for (let i = 0; i < 4; i++) {
+                if (isNaN(partsA[i]) && isNaN(partsB[i])) continue;
+                if (isNaN(partsA[i])) return 1; // Traktuj NaN jako większe
+                if (isNaN(partsB[i])) return -1; // Traktuj NaN jako większe
+
+                if (partsA[i] < partsB[i]) return -1;
+                if (partsA[i] > partsB[i]) return 1;
+            }
+            return 0;
+        }
+
+        function compareValues(key, order, rowA, rowB) {
+            const valA = getCellContentForSort(rowA, key);
+            const valB = getCellContentForSort(rowB, key);
+
+            let comparison = 0;
+            if (key === 'ip') {
+                comparison = compareIpAddresses(valA, valB);
+            } else {
+                const specialValues = ["Nieznana", "Błąd", "Nieznany MAC", "Nieznany OS"];
+                // Sprawdź, czy wartość ZACZYNA SIĘ od specjalnej wartości (np. "Nieznana (Ty)")
+                const isASpecial = specialValues.some(sv => valA.startsWith(sv));
+                const isBSpecial = specialValues.some(sv => valB.startsWith(sv));
+
+                if (isASpecial && !isBSpecial) {
+                    comparison = 1; 
+                } else if (!isASpecial && isBSpecial) {
+                    comparison = -1;
+                } else {
+                    if (valA.toLowerCase() < valB.toLowerCase()) {
+                        comparison = -1;
+                    }
+                    if (valA.toLowerCase() > valB.toLowerCase()) {
+                        comparison = 1;
+                    }
+                }
+            }
+            return (order === 'desc' ? (comparison * -1) : comparison);
+        }
+
+        function updateSortIndicators(clickedThKey, direction) {
+            document.querySelectorAll('th.sortable-header .sort-indicator').forEach(span => {
+                const th = span.closest('th');
+                if (th.dataset.columnKey === clickedThKey) {
+                    span.innerHTML = direction === 'asc' ? '&#x25B2;' : (direction === 'desc' ? '&#x25BC;' : '&#x25B2;&#x25BC;');
+                    span.classList.add('active');
+                } else {
+                    span.innerHTML = '&#x25B2;&#x25BC;';
+                    span.classList.remove('active');
+                }
+            });
+        }
+
+        function sortTable(columnKey, thElement) {
+            if (currentSortKey === columnKey) {
+                if (currentSortDirection === 'asc') {
+                    currentSortDirection = 'desc';
+                } else if (currentSortDirection === 'desc') {
+                    // Opcjonalnie: trzecie kliknięcie resetuje sortowanie lub wraca do 'asc'
+                    // Tutaj wracamy do 'asc' dla prostoty
+                     currentSortDirection = 'asc'; 
+                    // currentSortDirection = 'none'; // Jeśli chcesz resetować
+                } else { // Było 'none'
+                    currentSortDirection = 'asc';
+                }
+            } else {
+                currentSortKey = columnKey;
+                currentSortDirection = 'asc';
+            }
+            
+            // if (currentSortDirection === 'none' && currentSortKey === columnKey) {
+            //     // Jeśli chcemy resetować, to tutaj odtwarzamy oryginalną kolejność
+            //     // To wymagałoby przechowywania oryginalnych danych lub ponownego renderowania
+            //     // Na razie pomijamy pełny reset dla uproszczenia
+            //     updateSortIndicators(columnKey, 'none');
+            //     // return; // Nie sortuj, jeśli reset
+            // }
+
+
+            updateSortIndicators(columnKey, currentSortDirection);
+
+            const tableBody = document.getElementById('devicesTableBody');
+            const rows = Array.from(tableBody.querySelectorAll('tr.device-row'));
+
+            rows.sort((a, b) => compareValues(columnKey, currentSortDirection, a, b));
+
+            // Ponowne numerowanie kolumny Lp.
+            const lpCellIndex = displayedColumns.indexOf('lp');
+            if (lpCellIndex !== -1) {
+                rows.forEach((row, index) => {
+                    if (row.cells[lpCellIndex]) {
+                        row.cells[lpCellIndex].textContent = index + 1;
+                    }
+                });
+            }
+            
+            tableBody.innerHTML = ''; // Wyczyść istniejące wiersze
+            rows.forEach(row => tableBody.appendChild(row));
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            document.querySelectorAll('th.sortable-header').forEach(th => {
+                th.addEventListener('click', () => {
+                    const columnKey = th.dataset.columnKey;
+                    sortTable(columnKey, th);
+                });
+            });
+        });
+    </script>
+</body>
+</html>
+"""
+    try:
+        with open(finalna_nazwa_pliku_html, "w", encoding="utf-8") as f:
+            f.write(html_content)
+        
+        green_color = Fore.GREEN if COLORAMA_AVAILABLE else ""
+        red_color = Fore.RED if COLORAMA_AVAILABLE else ""
+        reset_color = Style.RESET_ALL if COLORAMA_AVAILABLE else ""
+        
+        abs_path_pliku_html = os.path.abspath(finalna_nazwa_pliku_html)
+        print(f"{green_color}Pomyślnie zapisano raport do pliku: {abs_path_pliku_html}{reset_color}")
+        return abs_path_pliku_html # Zwróć pełną ścieżkę do pliku
+    except IOError as e:
+        print(f"{red_color}Błąd zapisu do pliku HTML '{finalna_nazwa_pliku_html}': {e}{reset_color}")
+        return None # Zwróć None w przypadku błędu
+    except Exception as e:
+        print(f"{red_color}Nieoczekiwany błąd podczas zapisu pliku HTML: {e}{reset_color}")
+        return None # Zwróć None w przypadku błędu
+    
+def wyswietl_legende_kolorow_urzadzen(line_width: int = DEFAULT_LINE_WIDTH) -> None:
+    """
+    Wyświetla legendę opisującą znaczenie kolorów używanych
+    do wyróżniania urządzeń w tabeli.
+    """
+    if not COLORAMA_AVAILABLE:
+        # Informacja, że legenda kolorów nie ma zastosowania, jeśli colorama jest niedostępne
+        # Można to pominąć, jeśli nie chcemy tego komunikatu
+        # print(f"\n{Fore.YELLOW}Informacja: Kolorowanie jest wyłączone (brak biblioteki 'colorama'). Legenda kolorów nie ma zastosowania.{Style.RESET_ALL}")
+        return
+
+    wyswietl_tekst_w_linii("-", line_width, "Legenda kolorów urządzeń", Fore.LIGHTYELLOW_EX, Fore.LIGHTCYAN_EX, True)
+    print(f"  {Fore.MAGENTA}Magenta{Style.RESET_ALL} : Urządzenie znalezione tylko w tabeli ARP (nie odpowiedziało na ping).")
+    print(f"  {Fore.CYAN}Cyjan{Style.RESET_ALL}   : Urządzenie z poprawnie rozwiązaną nazwą hosta (DNS/NetBIOS).")
+    print(f"  {Fore.GREEN}Zielony{Style.RESET_ALL} : Urządzenie ze znanym producentem (na podstawie adresu MAC - OUI).")
+    print(f"  {Fore.RED}Czerwony{Style.RESET_ALL}: Wystąpił błąd podczas pobierania nazwy hosta lub identyfikacji OS.")
+    print(f"  {Fore.WHITE}Biały{Style.RESET_ALL}   : Domyślny kolor (np. nieznana nazwa hosta i nieznany producent, brak błędów).")
+    # Można dodać linię końcową, jeśli chcesz
+    # print("-" * line_width)
+
+def zapytaj_i_otworz_raport_html(sciezka_do_pliku_html: Optional[str]) -> None:
+    """
+    Pyta użytkownika, czy chce otworzyć wygenerowany raport HTML w przeglądarce.
+    Jeśli użytkownik potwierdzi, próbuje otworzyć plik.
+
+    Args:
+        sciezka_do_pliku_html: Ścieżka do pliku HTML lub None, jeśli plik nie został zapisany.
+    """
+    if not sciezka_do_pliku_html:
+        return
+
+    try:
+        prompt_text = f"Czy chcesz otworzyć raport HTML ({os.path.basename(sciezka_do_pliku_html)}) w przeglądarce? (T/n): "
+        odpowiedz_otwarcie = input(prompt_text).lower().strip()
+        # Jeśli użytkownik naciśnie Enter (pusta odpowiedź) LUB wpisze 't'/'y'
+        if not odpowiedz_otwarcie or odpowiedz_otwarcie.startswith('t') or odpowiedz_otwarcie.startswith('y'):
+            file_url = f"file://{sciezka_do_pliku_html}"
+            webbrowser.open(file_url)
+            print(f"Próba otwarcia pliku {sciezka_do_pliku_html} w domyślnej przeglądarce...")
+        else:
+            print("Pominięto otwieranie raportu w przeglądarce.")
+    except Exception as e:
+        print(f"{Fore.RED}Nie udało się automatycznie otworzyć pliku w przeglądarce: {e}{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}Możesz otworzyć plik ręcznie: {sciezka_do_pliku_html}{Style.RESET_ALL}")
+
+
 # --- Główna część skryptu ---
 if __name__ == "__main__":
     # try:
         wyswietl_tekst_w_linii("-",DEFAULT_LINE_WIDTH,"Skaner Sieci Lokalnej",Fore.YELLOW,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
-
-
         wszystkie_ip, glowny_ip = pobierz_wszystkie_aktywne_ip()
         # Sprawdź obecność VPN lub inne i wyświetl ostrzeżenie tylko jeśli psutil jest dostępny
         if PSUTIL_AVAILABLE:
@@ -2464,6 +2977,7 @@ if __name__ == "__main__":
         # ... (kod sprawdzający VPN i wyświetlający IP/MAC hosta) ...
         host_ip = glowny_ip #pobierz_ip_interfejsu()
         host_mac = pobierz_mac_adres(host_ip) #if host_ip else "Nieznany"
+        gateway_ip = pobierz_brame_domyslna()
         print(f"Adres IP komputera: {host_ip if host_ip else 'Nieznany'}")
         print(f"Adres MAC komputera: {host_mac if host_mac else 'Nieznany'}")
 
@@ -2481,106 +2995,88 @@ if __name__ == "__main__":
         if not baza_oui:
             print(f"{Fore.YELLOW}OSTRZEŻENIE: Nie udało się załadować bazy OUI. Nazwy producentów nie będą dostępne.{Style.RESET_ALL}")
             baza_oui = {} # Użyj pustego słownika
+        mac_nazwy_niestandardowe = wczytaj_mac_nazwy_z_pliku()
 
+        niestandardowe_porty_serwera_mapa = wczytaj_niestandardowe_porty_serwera() # Zmieniona nazwa zmiennej
         # Skanowanie sieci
         print("\nRozpoczynanie skanowania sieci (ping)...")
         start_arp_time = time.time() # Przesunięto start timera tutaj
         
         hosty_ktore_odpowiedzialy = pinguj_zakres(siec_prefix, DEFAULT_START_IP, DEFAULT_END_IP)
+        
         adresy_ip_z_arp = pobierz_ip_z_arp(siec_prefix)
-        polaczona_lista_ip = polacz_listy_ip(adresy_ip_z_arp, hosty_ktore_odpowiedzialy)
-
+        # polaczona_lista_ip = polacz_listy_ip(adresy_ip_z_arp, hosty_ktore_odpowiedzialy)
+        final_ip_list_do_przetworzenia = polacz_listy_ip(adresy_ip_z_arp, hosty_ktore_odpowiedzialy, host_ip, gateway_ip, siec_prefix)
         # --- SKANOWANIE PORTÓW (NOWY KROK) ---
-        wyniki_skanowania_portow: Dict[str, List[int]] = {}
-        if polaczona_lista_ip: # Skanuj porty tylko jeśli są hosty
-            print("\nSkanowania wybranych portów dla aktywnych hostów...")
-            # start_scan_time = time.time()
-            # Użyjemy puli wątków do równoległego skanowania RÓŻNYCH hostów
-            MAX_HOST_SCAN_WORKERS = MAX_HOSTNAME_WORKERS # Możesz ustawić inną wartość
-
-            try:
-                with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_HOST_SCAN_WORKERS) as host_executor:
-                    # Użyj funkcji skanuj_wybrane_porty_dla_ip, która sama używa wątków do portów
-                    future_to_ip_scan = {host_executor.submit(skanuj_wybrane_porty_dla_ip, ip): ip for ip in polaczona_lista_ip}
-
-                    processed_hosts = 0
-                    total_hosts_to_scan = len(polaczona_lista_ip)
-
-                    for future in concurrent.futures.as_completed(future_to_ip_scan):
-                        ip_skanowany = future_to_ip_scan[future]
-                        try:
-                            lista_otwartych = future.result()
-                            wyniki_skanowania_portow[ip_skanowany] = lista_otwartych
-                        except Exception as exc:
-                            print(f'\n{Fore.YELLOW}Skanowanie portów dla {ip_skanowany} zgłosił wyjątek: {exc}{Style.RESET_ALL}')
-                            wyniki_skanowania_portow[ip_skanowany] = [] # Zapisz pustą listę w razie błędu
-
-                        processed_hosts += 1
-                        print(f"\rPostęp skanowania portów: {processed_hosts}/{total_hosts_to_scan} hostów sprawdzonych...", end="")
-
-            except KeyboardInterrupt:
-                obsluz_przerwanie_uzytkownika()
-            finally:
-                print("\r" + " " * 70 + "\r", end="") # Wyczyść linię postępu
-        else:
-            print("\nBrak aktywnych hostów do skanowania portów.")
+        wyniki_skanowania_portow = skanuj_porty_rownolegle(final_ip_list_do_przetworzenia)
         # --- KONIEC SKANOWANIA PORTÓW ---
-
-        host_ip = pobierz_ip_interfejsu()
-        gateway_ip = pobierz_brame_domyslna()
-        ips_do_przetworzenia_set = set(polaczona_lista_ip)
-        if host_ip and host_ip.startswith(siec_prefix):
-            ips_do_przetworzenia_set.add(host_ip)
-        if gateway_ip and gateway_ip.startswith(siec_prefix):
-            ips_do_przetworzenia_set.add(gateway_ip)
-        final_ip_list_do_przetworzenia = list(ips_do_przetworzenia_set)
-        try:
-            final_ip_list_do_przetworzenia.sort(key=lambda ip: list(map(int, ip.split('.'))))
-        except ValueError:
-            final_ip_list_do_przetworzenia.sort()
-        # ---------------------------------------------------------
-
-        # --- NOWOŚĆ: Pobierz nazwy hostów RAZ ---
         nazwy_hostow_cache = pobierz_nazwy_hostow_rownolegle(final_ip_list_do_przetworzenia)
-        # ---------------------------------------
 
-        # Wyświetlanie wyników - przekaż cache nazw hostów
-        # Możesz usunąć wywołanie pokaz_arp_z_nazwami, jeśli używasz tylko rozszerzonej tabeli
-        # pokaz_arp_z_nazwami(
-        #     siec_prefix,
-        #     hosty_ktore_odpowiedzialy, # Lub final_ip_list_do_przetworzenia? Zależy co chcesz pokazać
-        #     baza_oui,
-        #     wyniki_skanowania_portow,
-        #     nazwy_hostow_cache # <-- Przekaż cache
-        # )
+        os_cache_wyniki = zgadnij_systemy_rownolegle(final_ip_list_do_przetworzenia, wyniki_skanowania_portow)      
 
-        # kolumny_wybrane_przez_uzytkownika = wybierz_kolumny_do_wyswietlenia()
-        os_cache_wyniki = wyswietl_rozszerzona_tabele_urzadzen(
-            siec_prefix,
-            polaczona_lista_ip, # Lub final_ip_list_do_przetworzenia?
-            baza_oui,
+        # --- Dodano: Pobieranie i parsowanie ARP ---
+        wynik_arp_raw = pobierz_tabele_arp() # Pobierz ARP raz
+        arp_map = parsuj_tabele_arp(wynik_arp_raw, siec_prefix) if wynik_arp_raw else {}
+        if not wynik_arp_raw:
+             print(f"{Fore.YELLOW}Ostrzeżenie: Nie można pobrać tabeli ARP. Adresy MAC mogą być niedostępne.{Style.RESET_ALL}")
+        # --- Koniec pobierania ARP ---             
+
+        lista_urzadzen = agreguj_informacje_o_urzadzeniach(
+            final_ip_list_do_przetworzenia, # Użyj finalnej listy IP
+            arp_map, # Przekaż mapę ARP (powinna być pobrana wcześniej)
+            nazwy_hostow_cache,
             wyniki_skanowania_portow,
-            nazwy_hostow_cache, # <-- Przekaż cache nazw
-            kolumny_wybrane_przez_uzytkownika
-            # kolumny_do_wyswietlenia=... # Opcjonalnie
+            os_cache_wyniki, # Teraz ta zmienna istnieje
+            baza_oui, # Przekaż bazę OUI
+            host_ip,
+            host_mac,
+            gateway_ip,
+            hosty_ktore_odpowiedzialy,
+            mac_nazwy_niestandardowe,
+            niestandardowe_porty_serwera_mapa
         )
+
+        # --- WYŚWIETL LEGENDĘ KOLORÓW URZĄDZEŃ ---
+        wyswietl_legende_kolorow_urzadzen()
+        # --- KONIEC WYŚWIETLANIA LEGENDY KOLORÓW ---
+
+        # --- WYŚWIETL LEGENDĘ PORTÓW (NOWY KROK) ---
+        wyswietl_legende_portow(wyniki_skanowania_portow)
+        # --- KONIEC WYŚWIETLANIA LEGENDY ---
+
+        # --- WYŚWIETL LEGENDĘ SYSTEMÓW ---
+        wyswietl_legende_systemow(os_cache_wyniki) # Przekaż wyniki zgadywania OS
+        # --- KONIEC WYŚWIETLANIA LEGENDY ---
+
+        # --- Wyświetlanie tabeli ---
+        # Przekaż listę obiektów DeviceInfo do funkcji wyświetlającej
+        wyswietl_tabele_urzadzen(
+            lista_urzadzen, # Lista obiektów
+            kolumny_wybrane_przez_uzytkownika # Lista wybranych kolumn
+        )
+
         end_arp_time = time.time() # Koniec timera
         # Wyświetl czas wykonania pod tabelą
         czas_trwania_sekundy = end_arp_time - start_arp_time
         print(f"\nCałkowity czas skanowania (ping + ARP + nazwy + porty): {czas_trwania_sekundy:.2f} sekund. Czyli {przelicz_sekundy_na_minuty_sekundy(round(czas_trwania_sekundy))} min:sek")
 
-        # --- WYŚWIETL LEGENDĘ PORTÓW (NOWY KROK) ---
-        wyswietl_legende_portow(wyniki_skanowania_portow)
-        # --- KONIEC WYŚWIETLANIA LEGENDY ---
-        wyswietl_legende_systemow(os_cache_wyniki) # Przekaż wyniki zgadywania OS
+        wyswietl_tekst_w_linii("-",DEFAULT_LINE_WIDTH,"",Fore.LIGHTCYAN_EX,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
+
+        # --- ZAPIS DO PLIKU HTML ---
+        sciezka_do_zapisanego_html = zapisz_tabele_urzadzen_do_html(
+            lista_urzadzen,
+            DOMYSLNE_KOLUMNY_DO_WYSWIETLENIA, # Przekaż domyślne kolumny do wyświetlenia
+            # kolumny_wybrane_przez_uzytkownika,
+            OPISY_PORTOW, # Przekaż globalny słownik opisów portów
+            niestandardowe_porty_serwera_mapa, # Przekaż mapę niestandardowych portów
+            siec_prefix=siec_prefix # Przekaż prefiks sieciowy
+        )
+        # --- KONIEC ZAPISU DO HTML ---
+
+        # --- PYTANIE O OTWARCIE PLIKU HTML (użycie nowej funkcji) ---
+        zapytaj_i_otworz_raport_html(sciezka_do_zapisanego_html)
+        # --- KONIEC PYTANIA O OTWARCIE PLIKU HTML ---
 
         wyswietl_tekst_w_linii("-",DEFAULT_LINE_WIDTH,"Skanowanie zakończone. Przewiń wyżej, aby zobaczyć wyniki.",Fore.LIGHTCYAN_EX,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
 
-    # except Exception as main_exc:
-    #      print(f"\n{Fore.RED}Wystąpił nieoczekiwany błąd w głównej części skryptu: {main_exc}{Style.RESET_ALL}")
-    #      # Możesz dodać tutaj bardziej szczegółowe logowanie błędu
-    # finally:
-    #     # UWAGA: Użycie os._exit jest ostatecznością. Może powodować problemy
-    #     # z niezapisanymi danymi lub nieposprzątanymi zasobami.
-    #     # print("Zakończenie skryptu...") # Opcjonalny komunikat debugowania
         sys.exit(0) # Użyj standardowego wyjścia
