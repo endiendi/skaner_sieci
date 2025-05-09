@@ -1,6 +1,6 @@
 # Skaner Sieci Lokalnej (LAN Scanner)
 
-Prosty skrypt w Pythonie do skanowania sieci lokalnej (LAN) w poszukiwaniu aktywnych urządzeń. Wyświetla adresy IP, adresy MAC, nazwy hostów (jeśli możliwe do rozwiązania) oraz producentów kart sieciowych na podstawie bazy danych OUI (Organizationally Unique Identifier).
+Prosty skrypt w Pythonie do skanowania sieci lokalnej (LAN) w poszukiwaniu aktywnych urządzeń. Wyświetla adresy IP, adresy MAC, nazwy hostów, producentów kart sieciowych (OUI), otwarte niestandardowe porty TCP, a także próbuje zgadnąć system operacyjny. Wyniki mogą być wyświetlane w konsoli oraz zapisywane do interaktywnego raportu HTML.
 
 W ramach nauki programowania — bardziej kopiuj-wklej i research w sieci, ale coś się udało.
 
@@ -13,9 +13,19 @@ W ramach nauki programowania — bardziej kopiuj-wklej i research w sieci, ale c
 *   **Identyfikacja producenta (OUI):** Pobiera (i buforuje lokalnie) bazę danych IEEE OUI, aby zidentyfikować producenta karty sieciowej na podstawie adresu MAC.
 *   **Wykrywanie hosta lokalnego i bramy:** Oznacza w wynikach komputer, na którym uruchomiono skrypt, oraz domyślną bramę sieciową.
 *   **Kolorowanie wyników:** Używa biblioteki `colorama` (jeśli dostępna) do czytelniejszego prezentowania wyników w konsoli.
+*   **Generowanie raportu HTML:** Tworzy plik `raport_skanowania.html` z interaktywną tabelą wyników (sortowanie kolumn) i pyta o jego automatyczne otwarcie.
+*   **Skanowanie niestandardowych portów TCP:** Sprawdza, czy na znalezionych urządzeniach są otwarte porty zdefiniowane przez użytkownika w pliku `port_serwer.txt`.
+*   **Zgadywanie systemu operacyjnego:** Próbuje oszacować system operacyjny na podstawie wartości TTL odpowiedzi na ping.
+*   **Własne nazwy urządzeń:** Możliwość przypisania niestandardowych nazw urządzeniom na podstawie ich adresów MAC za pomocą pliku `mac_nazwy.txt`.
+*   **Konfigurowalne porty i opisy:** Użytkownik może zdefiniować własne porty do skanowania wraz z ich opisami w pliku `port_serwer.txt`.
+*   **Legendy w konsoli:** Wyświetla legendy wyjaśniające znaczenie kolorów urządzeń, wyniki skanowania portów oraz prawdopodobne systemy operacyjne.
 *   **Wykrywanie VPN/Tailscale:** Ostrzega użytkownika, jeśli wykryje potencjalnie aktywny interfejs VPN (wymaga `psutil`), który może zakłócać rozpoznawanie nazw hostów w LAN.
 *   **Automatyczna instalacja zależności:** Próbuje automatycznie zainstalować brakujące biblioteki (`colorama`, `psutil`, `requests`) za pomocą `pip`.
 *   **Wsparcie dla wielu platform:** Działa w systemach Windows, Linux i macOS (wykorzystując odpowiednie polecenia systemowe).
+*   **Argumenty linii poleceń:** Umożliwia modyfikację zachowania skryptu, np. podanie prefiksu sieci, pominięcie pingowania, rozwiązywania nazw hostów, skanowania portów czy zgadywania OS.
+*   **Zapisywanie konfiguracji użytkownika:** Zapamiętuje ostatnio użyty prefiks sieci oraz wybrane kolumny do wyświetlenia w konsoli w pliku `config.json`.
+*   **Interaktywny wybór kolumn:** Pozwala użytkownikowi wybrać, które kolumny mają być wyświetlane w tabeli w konsoli.
+*   **Wyświetlanie czasu skanowania:** Informuje o całkowitym czasie trwania skanowania.
 
 ## Wymagania
 
@@ -60,35 +70,46 @@ W ramach nauki programowania — bardziej kopiuj-wklej i research w sieci, ale c
 8.  **Rozwiązywanie nazw hostów:** Dla każdego znalezionego adresu IP (z wyjątkiem broadcast) próbuje uzyskać nazwę hosta za pomocą `socket.gethostbyaddr` lub `socket.getnameinfo` (z timeoutem i równolegle w wielu wątkach).
 9.  **Wyświetlanie wyników:** Prezentuje sformatowaną tabelę zawierającą numer porządkowy, adres IP, adres MAC, nazwę hosta i nazwę producenta (na podstawie OUI). Oznacza hosta lokalnego i bramę domyślną.
 
-## Konfiguracja (w kodzie źródłowym)
+## Konfiguracja
+Skrypt oferuje kilka sposobów konfiguracji:
 
-Niektóre parametry można dostosować bezpośrednio w pliku `.py`:
+### Parametry w kodzie źródłowym
+Niektóre globalne parametry działania skryptu można dostosować bezpośrednio w pliku `skaner_sieci.py`:
 
 *   `MULTICAST_PREFIXES`: Lista prefiksów adresów multicast do wykluczenia.
 *   `DEFAULT_START_IP`, `DEFAULT_END_IP`: Zakres hostów do pingowania.
 *   `OUI_URL`, `OUI_LOCAL_FILE`, `OUI_UPDATE_INTERVAL`: Ustawienia bazy OUI.
 *   `REQUESTS_TIMEOUT`, `PING_TIMEOUT_MS`, `PING_TIMEOUT_SEC`, `HOSTNAME_LOOKUP_TIMEOUT`: Timeouty dla operacji sieciowych.
+*   `TCP_CONNECT_TIMEOUT`: Timeout dla skanowania portów TCP.
+*   `MAX_PING_WORKERS`: Maksymalna liczba równoległych pingów im więcej tym mniejsza dokładność
 *   `VPN_INTERFACE_PREFIXES`: Prefiksy nazw interfejsów uznawanych za VPN.
 *   `MAX_HOSTNAME_WORKERS`: Maksymalna liczba wątków do równoległego rozwiązywania nazw hostów.
+*   `TTL_OS_GUESSES`: Słownik mapujący zakresy TTL na prawdopodobne systemy operacyjne.
+
+### Pliki konfiguracyjne
+Skrypt wykorzystuje również zewnętrzne pliki tekstowe (umieszczone w tym samym katalogu co `skaner_sieci.py`) do dalszej personalizacji:
+
+*   **`mac_nazwy.txt`**: Pozwala na przypisanie niestandardowych, przyjaznych nazw urządzeniom na podstawie ich adresów MAC. Każda linia w pliku powinna mieć format:
+    `AA:BB:CC:DD:EE:FF Moja niestandardowa nazwa urządzenia`
+    Przykład: `00:1A:2B:3C:4D:5E Serwer Plików`
+*   **`port_serwer.txt`**: Umożliwia zdefiniowanie niestandardowych portów TCP, które pozwalają rozpoznać czy urządzenie ma uruchomiony serwer WWW. Każda linia w pliku powinna mieć format:
+    `[https]`
+    `443`
+    `[http]`
+    `80`
+
+*   **`oui.txt`**: Lokalna kopia bazy danych OUI (Organizationally Unique Identifier), pobierana i aktualizowana automatycznie przez skrypt.
 
 ## Wsparcie dla platform
 
-Skrypt został przetestowany i powinien działać na:
-
-*   **Windows:** Używa `route print`, `arp -a`, `ping -n 1 -w`, `getmac`, `ipconfig`.
-*   **Linux:** Używa `ip route`, `ip neighbor`, `ping -c 1 -W`, `ip addr`, `ip link`.
-*   **macOS:** Używa `netstat -nr`, `arp -an`, `ping -c 1 -W`, `ifconfig`.
-
-## Rozwiązywanie problemów
-
-*   **Brakujące nazwy hostów ("Nieznana"):**
-    *   Upewnij się, że serwer DNS w Twojej sieci działa poprawnie i potrafi rozwiązywać lokalne nazwy.
-    *   Jeśli używasz VPN, może on zakłócać lokalne zapytania DNS. Spróbuj skonfigurować VPN (np. split tunneling) lub tymczasowo go wyłączyć.
-    *   Firewall na skanowanych urządzeniach może blokować odpowiedzi na zapytania o nazwę.
-*   **Brakujące urządzenia:**
+Unchanged lines
     *   Upewnij się, że urządzenia są włączone i podłączone do tej samej sieci.
     *   Firewall na urządzeniu może blokować odpowiedzi na ping (ICMP Echo Request). Skrypt nadal może znaleźć urządzenie, jeśli pojawi się ono w tabeli ARP po innej komunikacji.
 *   **Błędy przy pobieraniu OUI:** Sprawdź połączenie internetowe. Skrypt spróbuje użyć lokalnie zapisanej wersji bazy, jeśli jest dostępna.
+*   **Niedokładne zgadywanie OS:** Zgadywanie systemu operacyjnego na podstawie TTL jest metodą heurystyczną i nie zawsze jest w 100% dokładne. Różne systemy i konfiguracje sieciowe mogą wpływać na wartości TTL.
+*   **Niestandardowe porty zamknięte:** Jeśli skanowanie niestandardowych portów pokazuje je jako zamknięte, upewnij się, że:
+    *   Usługa faktycznie nasłuchuje na danym porcie na urządzeniu docelowym.
+    *   Firewall na urządzeniu docelowym lub w sieci nie blokuje połączeń przychodzących na ten port.
 *   **Błędy uprawnień:** W niektórych systemach (szczególnie Linux/macOS) niektóre polecenia sieciowe mogą wymagać uprawnień administratora (root/sudo), chociaż skrypt stara się używać poleceń dostępnych dla zwykłego użytkownika.
 
 ## Licencja
