@@ -2,7 +2,7 @@
 
 Prosty skrypt w Pythonie do skanowania sieci lokalnej (LAN) w poszukiwaniu aktywnych urządzeń. Wyświetla adresy IP, adresy MAC, nazwy hostów, producentów kart sieciowych (OUI), otwarte niestandardowe porty TCP, a także próbuje zgadnąć system operacyjny. Wyniki mogą być wyświetlane w konsoli oraz zapisywane do interaktywnego raportu HTML.
 
-W ramach nauki programowania — bardziej kopiuj-wklej i research w sieci, ale coś się udało.
+W ramach nauki programowania — bardziej kopiuj-wklej i research w sieci oraz niezastąpione narzędzia AI, ale coś się udało.
 
 ## Funkcje
 

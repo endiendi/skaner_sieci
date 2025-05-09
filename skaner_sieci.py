@@ -36,8 +36,6 @@ class DeviceInfo:
     open_custom_server_ports: List[int] = field(default_factory=list) # Otwarte porty z pliku port_serwer.txt
     dns_lookup_raw_result: str = "Nieznana" # Przechowa oryginalny wynik z gethostbyaddr/getnameinfo
 
-
-
 #pip uninstall psutil
 #pip install psutil
 
@@ -102,7 +100,6 @@ except ImportError:
         print("\nInstalacja pominięta. Kontynuowanie bez kolorów.")
     print("-" * 70)
 
-
 # 2. Sprawdzanie Psutil
 try:
     import psutil
@@ -125,7 +122,6 @@ except ImportError:
     except (EOFError, KeyboardInterrupt):
          print("\nInstalacja pominięta. Kontynuowanie z ograniczoną funkcjonalnością.")
     print(f"{Style.BRIGHT}-{Style.RESET_ALL}" * 70)
-
 
 # 3. Sprawdzanie Requests
 try:
@@ -207,8 +203,8 @@ OPISY_PORTOW: Dict[int, str] = {
     8000: "Alternatywny HTTP",
     8001: "Alternatywny HTTPS",
     8080: "Alternatywny HTTPS (często proxy lub serwery web)",
-    8123: "Home Assistant (HTTPS)", # Dodano opis
-    4357: "Home Assistant (HTTP)", # Dodano opis
+    8123: "Home Assistant (HTTPS)", 
+    4357: "Home Assistant (HTTP)", 
     8443: "Alternatywny HTTPS",
     5060: "SIP (Session Initiation Protocol) - używany do VoIP",
     5061: "SIPS (SIP Secure) - bezpieczna wersja SIP",
@@ -232,11 +228,11 @@ OPISY_PORTOW: Dict[int, str] = {
     9090: "Prometheus Server",
     10250: "Kubelet API (Kubernetes)",
     10255: "Kubelet Read-Only Port (Kubernetes) - bez uwierzytelniania",
-    8001: "Kubernetes API Server (port insecure)", # Zazwyczaj zabezpieczony przez proxy
+    8001: "Kubernetes API Server (port insecure)", 
     6443: "Kubernetes API Server (HTTPS)",
     30000-32767: "Zakres NodePort (Kubernetes) - dla eksternalnego dostępu do usług",
     8096: "Jellyfin (HTTP)",
-    8989: "Jellyfin (HTTPS)", # Domyślny port HTTPS, może być skonfigurowany
+    8989: "Jellyfin (HTTPS)", 
     32400: "Plex Media Server",
     8080: "Audiobookshelf (HTTP) - Domyślny, ale konfigurowalny",
     13378: "Audiobookshelf (HTTP) - Domyślny, ale konfigurowalny",
@@ -251,16 +247,14 @@ OS_DEFINITIONS: Dict[str, Dict[str, str]] = {
         "abbr": "Lin/Media (Samba,RDP?)",
         "desc": "Linux Media Center (wykryto SSH, Samba, potencjalnie RDP)"
     },
-    "LINUX_MEDIA_SAMBA_RDP_ALT": { # Dla portu 139
+    "LINUX_MEDIA_SAMBA_RDP_ALT": { 
         "abbr": "Lin/Media (Samba,RDP?)",
         "desc": "Linux Media Center (wykryto SSH, Samba(139), potencjalnie RDP)"
     },
-    # --- POPRAWIONY WPIS ---
     "NAS_MULTIMEDIA": {
         "abbr": "NAS/MediaSrv",
         "desc": "NAS z usługami multimedialnymi (SSH, Web, SMB, Plex, Jellyfin, etc.)"
     },
-    # --- KONIEC POPRAWIONEGO WPISU ---
     "HOME_ASSISTANT": {
         "abbr": "HomeAsst",
         "desc": "Home Assistant (wykryto port 8123 lub 4357)"
@@ -336,7 +330,6 @@ OS_DEFINITIONS: Dict[str, Dict[str, str]] = {
 OS_ABBREVIATIONS: Dict[str, str] = {
     key: definition["abbr"] for key, definition in OS_DEFINITIONS.items()
 }
-
 
 # Konfiguracja kolumn dla rozszerzonej tabeli
 KOLUMNY_TABELI: Dict[str, Dict[str, Any]] = {
@@ -463,7 +456,6 @@ OS_FILTERS: List[Dict[str, Any]] = [
     },
     # Reguły zapasowe (UNKNOWN_PORTS, UNKNOWN_NO_PORTS) są obsługiwane na końcu, jeśli żaden filtr nie pasuje.
 ]
-
 
 def sprawdz_i_utworz_plik(nazwa_pliku: str, przykladowa_tresc: Optional[str] = None) -> None:
     """
@@ -665,8 +657,6 @@ def wybierz_kolumny_do_wyswietlenia(
     # Zwróć ostatecznie wybrane klucze, upewniając się, że 'lp' jest na początku
     return finalne_wybrane
 
-
-
 def pobierz_nazwe_producenta_oui(mac: Optional[str], baza_oui: Dict[str, str]) -> str:
     """
     Pobiera oczyszczoną nazwę producenta na podstawie adresu MAC i bazy OUI.
@@ -748,7 +738,6 @@ def pobierz_nazwy_hostow_rownolegle(ips_do_sprawdzenia: List[str], max_workers: 
     print("Pobieranie nazw hostów zakończone.")
     return hostname_cache
 
-
 def wyswietl_legende_systemow(
     wyniki_os: Dict[str, str],
     definicje_systemow: Dict[str, Dict[str, str]] = OS_DEFINITIONS # Użyj nowego słownika
@@ -785,8 +774,6 @@ def wyswietl_legende_systemow(
             opis_pelny = skrot_do_opisu.get(skrot, "Brak opisu w definicjach") # Pobierz opis
             print(f"  {Fore.LIGHTMAGENTA_EX}{skrot:<{max_skrot_len}}{Style.RESET_ALL} : {opis_pelny}") # Wyświetl skrót : opis
 
-
-
 def wyswietl_legende_portow(wyniki_portow: Dict[str, List[int]], opisy: Dict[int, str] = OPISY_PORTOW) -> None:
     """
     Wyświetla legendę dla portów, które zostały znalezione jako otwarte
@@ -812,11 +799,6 @@ def wyswietl_legende_portow(wyniki_portow: Dict[str, List[int]], opisy: Dict[int
         for port in posortowane_porty:
             opis = opisy.get(port, "Nieznana usługa") # Pobierz opis lub użyj domyślnego
             print(f"  Port {Fore.LIGHTMAGENTA_EX}{port:<5}{Style.RESET_ALL}: {opis}")
-
-        # Możesz dodać linię końcową, jeśli chcesz
-        # print("-" * DEFAULT_LINE_WIDTH)
-    # Jeśli żaden port nie został znaleziony jako otwarty, nic nie rób
-
 
 def skanuj_port(ip: str, port: int, timeout: float = 0.2) -> Optional[int]:
     """
@@ -886,7 +868,6 @@ def skanuj_wybrane_porty_dla_ip(ip: str, porty_do_skanowania: Optional[List[int]
         return otwarte_porty
 
     # print(f"Rozpoczynanie skanowania {len(ports_to_scan)} portów dla {ip} (max {MAX_PORT_SCAN_WORKERS} wątków)...") # Debug
-
     try:
         # Upewnij się, że nie tworzymy więcej wątków niż portów do skanowania
         max_workers = min(MAX_PORT_SCAN_WORKERS, len(ports_to_scan))
@@ -1022,8 +1003,6 @@ def zgadnij_system_operacyjny(
 
     # Jeśli nic nie pasowało, a są jakieś otwarte porty
     return OS_ABBREVIATIONS.get("UNKNOWN_PORTS", "Nieznany (Ports)")
-
-
 
 def pobierz_wszystkie_aktywne_ip() -> Tuple[Dict[str, List[str]], Optional[str]]:
     """
@@ -1166,7 +1145,6 @@ def wyswietl_tekst_w_linii(znak: str,
     if dodaj_odstepy:
         print()
 
-
 def obsluz_przerwanie_uzytkownika():
     """
     Obsługuje wyjątek KeyboardInterrupt (Ctrl+C).
@@ -1207,8 +1185,6 @@ def przelicz_sekundy_na_minuty_sekundy(total_seconds: int) -> str:
   # Zwróć sformatowany string, upewniając się, że sekundy mają dwa miejsca
   # (np. 7 sekund jako "07")
   return f"{minuty}:{sekundy:02d}"
-
-
 
 def pobierz_brame_domyslna() -> Optional[str]:
     """
@@ -2925,10 +2901,10 @@ def wyswietl_legende_kolorow_urzadzen(line_width: int = DEFAULT_LINE_WIDTH) -> N
 
     wyswietl_tekst_w_linii("-", line_width, "Legenda kolorów urządzeń", Fore.LIGHTYELLOW_EX, Fore.LIGHTCYAN_EX, True)
     print(f"  {Fore.MAGENTA}Magenta{Style.RESET_ALL} : Urządzenie znalezione tylko w tabeli ARP (nie odpowiedziało na ping).")
-    print(f"  {Fore.CYAN}Cyjan{Style.RESET_ALL}   : Urządzenie z poprawnie rozwiązaną nazwą hosta (DNS/NetBIOS).")
-    print(f"  {Fore.GREEN}Zielony{Style.RESET_ALL} : Urządzenie ze znanym producentem (na podstawie adresu MAC - OUI).")
+    print(f"  {Fore.CYAN}Cyjan{Style.RESET_ALL}   : IP potwierdzone ping i ARP, Urządzenie z poprawnie rozwiązaną nazwą hosta (DNS/NetBIOS).")
+    print(f"  {Fore.GREEN}Zielony{Style.RESET_ALL} : IP potwierdzone ping i ARP. Urządzenie ze znanym producentem (na podstawie adresu MAC - OUI).")
     print(f"  {Fore.RED}Czerwony{Style.RESET_ALL}: Wystąpił błąd podczas pobierania nazwy hosta lub identyfikacji OS.")
-    print(f"  {Fore.WHITE}Biały{Style.RESET_ALL}   : Domyślny kolor (np. nieznana nazwa hosta i nieznany producent, brak błędów).")
+    print(f"  {Fore.WHITE}Biały{Style.RESET_ALL}   : IP potwierdzone ping i ARP, ale nieznane nazwa hosta i nieznany producent, brak błędów.")
     # Można dodać linię końcową, jeśli chcesz
     # print("-" * line_width)
 
