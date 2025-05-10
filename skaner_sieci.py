@@ -12,7 +12,7 @@ import sys
 import concurrent.futures
 import threading
 import errno
-from typing import List, Tuple, Optional, Dict, Any
+from typing import List, Tuple, Optional, Dict, Any, Union, Literal
 import shlex
 import argparse
 import webbrowser
@@ -675,7 +675,7 @@ def _przetworz_wybor_menu_z_linii_polecen(
 
     # Specjalna obsługa dla -m 0
     if cmd_menu_choice == "0":
-        print(f"{Fore.CYAN}Parametr -m 0: Zaznaczanie wszystkich dostępnych kolumn (bez opcji HTML).{Style.RESET_ALL}")
+        # print(f"{Fore.CYAN}Parametr -m 0: Zaznaczanie wszystkich dostępnych kolumn (bez opcji HTML).{Style.RESET_ALL}")
         wszystkie_numery_kolumn = list(range(1, len(klucze_kolumn_do_wyboru_rzeczywiste) + 1))
         return sorted(wszystkie_numery_kolumn)
 
@@ -897,7 +897,7 @@ def wybierz_kolumny_do_wyswietlenia(
     if wybrane_numery_opcji is not None:
         # Jeśli _przetworz_wybor_menu_z_linii_polecen zwróciło listę (nawet pustą, jeśli -m było, ale bez prawidłowych opcji)
         if wybrane_numery_opcji: # Sprawdź, czy lista nie jest pusta
-            print(f"{Fore.GREEN}Zastosowano wybór kolumn z linii poleceń. Wybrane numery opcji: {wybrane_numery_opcji}{Style.RESET_ALL}")
+            print(f"{Fore.GREEN}Zastosowano wybór kolumn z linii poleceń. Wybrane numery opcji: {wybrane_numery_opcji}{Style.RESET_ALL}\n")
         else:
             print(f"{Fore.YELLOW}Parametr -m '{cmd_menu_choice}' nie zawierał prawidłowych opcji. Uruchamianie interaktywnego menu wyboru kolumn...{Style.RESET_ALL}")
             wybrane_numery_opcji = wybierz_kolumny_do_wyswietlenia_menu(wszystkie_kolumny_map, domyslne_kolumny_dla_menu)
@@ -2262,7 +2262,7 @@ def pobierz_i_zweryfikuj_prefiks(cmd_prefix: Optional[str] = None) -> Optional[s
     potwierdzony_prefiks: Optional[str] = None
 
     if cmd_prefix:
-        print(f"{Fore.CYAN}Próba użycia prefiksu sieciowego z linii poleceń: -p {cmd_prefix}{Style.RESET_ALL}")
+        # print(f"{Fore.CYAN}Próba użycia prefiksu sieciowego z linii poleceń: -p {cmd_prefix}{Style.RESET_ALL}")
         prefiks_do_walidacji = cmd_prefix.strip()
         if not prefiks_do_walidacji.endswith("."):
             prefiks_do_walidacji += "."
@@ -2432,7 +2432,7 @@ def agreguj_informacje_o_urzadzeniach(
     hosty_ktore_odpowiedzialy: List[str], # Potrzebne do określenia źródła
     mac_nazwy_map: Dict[str, str],
     configured_custom_server_ports_map: Dict[str, List[int]] # Zmieniono z List[int] na Dict[str, List[int]]
-) -> List[DeviceInfo]:
+) -> Union[List[DeviceInfo], Literal[False]]:
     """Agreguje zebrane informacje o urządzeniach w listę obiektów DeviceInfo."""
     lista_urzadzen: List[DeviceInfo] = []
     print("Agregowanie informacji o urządzeniach...")
@@ -2501,6 +2501,8 @@ def agreguj_informacje_o_urzadzeniach(
         lista_urzadzen.append(device)
 
     print("Agregacja zakończona.")
+    if not lista_urzadzen:
+        return False
     return lista_urzadzen
 
 
@@ -3300,8 +3302,7 @@ if __name__ == "__main__":
         host_ip = glowny_ip #pobierz_ip_interfejsu()
         host_mac = pobierz_mac_adres(host_ip) #if host_ip else "Nieznany"
         gateway_ip = pobierz_brame_domyslna()
-        print(f"Adres IP komputera: {host_ip if host_ip else 'Nieznany'}")
-        print(f"Adres MAC komputera: {host_mac if host_mac else 'Nieznany'}")
+
 
         # Pobierz i zweryfikuj prefiks sieciowy używając nowej funkcji
         siec_prefix = pobierz_i_zweryfikuj_prefiks(cmd_prefix=cmd_prefix_to_use)
@@ -3310,6 +3311,9 @@ if __name__ == "__main__":
             wszystkie_kolumny_map=KOLUMNY_TABELI,
             domyslne_kolumny_dla_menu=DOMYSLNE_KOLUMNY_DO_WYSWIETLENIA,
             cmd_menu_choice=cmd_menu_choice_to_use) # Przekaż przetworzony wybór z linii poleceń
+        
+        print(f"Adres IP komputera: {host_ip if host_ip else 'Nieznany'}")
+        print(f"Adres MAC komputera: {host_mac if host_mac else 'Nieznany'}")        
         
         # Sprawdź, czy udało się uzyskać prefiks
         if siec_prefix is None:
@@ -3348,7 +3352,7 @@ if __name__ == "__main__":
              print(f"{Fore.YELLOW}Ostrzeżenie: Nie można pobrać tabeli ARP. Adresy MAC mogą być niedostępne.{Style.RESET_ALL}")
         # --- Koniec pobierania ARP ---             
 
-        lista_urzadzen = agreguj_informacje_o_urzadzeniach(
+        wynik_agregacji = agreguj_informacje_o_urzadzeniach(
             final_ip_list_do_przetworzenia, # Użyj finalnej listy IP
             arp_map, # Przekaż mapę ARP (powinna być pobrana wcześniej)
             nazwy_hostow_cache,
@@ -3362,6 +3366,14 @@ if __name__ == "__main__":
             mac_nazwy_niestandardowe,
             niestandardowe_porty_serwera_mapa
         )
+        
+        # Przygotuj lista_urzadzen_do_wyswietlenia dla funkcji oczekujących listy
+        lista_urzadzen_do_wyswietlenia: List[DeviceInfo]
+        if wynik_agregacji is False:
+            print(f"{Fore.YELLOW}Nie zebrano informacji o żadnych urządzeniach.{Style.RESET_ALL}")
+            lista_urzadzen_do_wyswietlenia = []
+        else:
+            lista_urzadzen_do_wyswietlenia = wynik_agregacji
 
         # --- WYŚWIETL LEGENDĘ KOLORÓW URZĄDZEŃ ---
         wyswietl_legende_kolorow_urzadzen()
@@ -3378,8 +3390,8 @@ if __name__ == "__main__":
         # --- Wyświetlanie tabeli ---
         # Przekaż listę obiektów DeviceInfo do funkcji wyświetlającej
         wyswietl_tabele_urzadzen(
-            lista_urzadzen, # Lista obiektów
-            kolumny_dla_terminalu # Użyj kolumn wybranych dla terminala
+            lista_urzadzen_do_wyswietlenia, # Użyj przygotowanej listy
+            kolumny_dla_terminalu
         )
 
         end_arp_time = time.time() # Koniec timera
@@ -3396,20 +3408,24 @@ if __name__ == "__main__":
         else:
             kolumny_dla_html_reportu = DOMYSLNE_KOLUMNY_DO_WYSWIETLENIA # Użyj domyślnego pełnego zestawu
 
-        # --- ZAPIS DO PLIKU HTML ---
-        sciezka_do_zapisanego_html = zapisz_tabele_urzadzen_do_html(
-            lista_urzadzen,
-            kolumny_dla_html_reportu, # Przekaż odpowiedni zestaw kolumn
-            OPISY_PORTOW, # Przekaż globalny słownik opisów portów
-            niestandardowe_porty_serwera_mapa, # Przekaż mapę niestandardowych portów
-            siec_prefix=siec_prefix # Przekaż prefiks sieciowy
-        )
-        # --- KONIEC ZAPISU DO HTML ---
+        # Sprawdź, czy są jakieś urządzenia do zapisania w raporcie HTML
+        if wynik_agregacji is not False and lista_urzadzen_do_wyswietlenia: # Dodatkowy warunek na listę
+            # --- ZAPIS DO PLIKU HTML ---
+            sciezka_do_zapisanego_html = zapisz_tabele_urzadzen_do_html(
+                lista_urzadzen_do_wyswietlenia, # Użyj przygotowanej listy
+                kolumny_dla_html_reportu, # Przekaż odpowiedni zestaw kolumn
+                OPISY_PORTOW, # Przekaż globalny słownik opisów portów
+                niestandardowe_porty_serwera_mapa, # Przekaż mapę niestandardowych portów
+                siec_prefix=siec_prefix # Przekaż prefiks sieciowy
+            )
+            # --- KONIEC ZAPISU DO HTML ---
 
-        # --- PYTANIE O OTWARCIE PLIKU HTML (użycie nowej funkcji) ---
-        zapytaj_i_otworz_raport_html(sciezka_do_zapisanego_html)
-        # --- KONIEC PYTANIA O OTWARCIE PLIKU HTML ---
-
+            # --- PYTANIE O OTWARCIE PLIKU HTML (użycie nowej funkcji) ---
+            zapytaj_i_otworz_raport_html(sciezka_do_zapisanego_html)
+            # --- KONIEC PYTANIA O OTWARCIE PLIKU HTML ---
+        else:
+            print(f"{Fore.YELLOW}Pominięto generowanie raportu HTML, ponieważ nie znaleziono żadnych urządzeń.{Style.RESET_ALL}")
+       
         wyswietl_tekst_w_linii("-",DEFAULT_LINE_WIDTH,"Skanowanie zakończone. Przewiń wyżej, aby zobaczyć wyniki.",Fore.LIGHTCYAN_EX,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
     except KeyboardInterrupt:
         obsluz_przerwanie_uzytkownika()
