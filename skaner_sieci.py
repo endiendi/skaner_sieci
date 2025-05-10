@@ -14,6 +14,7 @@ import threading
 import errno
 from typing import List, Tuple, Optional, Dict, Any
 import shlex
+import argparse
 import webbrowser
 import html
 import json
@@ -646,6 +647,84 @@ def pobierz_tabele_arp() -> Optional[str]:
         return None
 
 
+def _przetworz_wybor_menu_z_linii_polecen(
+    cmd_menu_choice: Optional[str],
+    klucze_kolumn_do_wyboru_rzeczywiste: List[str],
+    numer_opcji_html: int
+) -> Optional[List[int]]:
+    """
+    Przetwarza wybór opcji menu podany jako parametr linii poleceń (-m).
+    Logika:
+    - Jeśli -m 0: Zaznacza wszystkie kolumny (1 do N), opcja HTML jest nieaktywna.
+    - Dla innych cyfr w -m:
+        - Kolumny: Numery podane w -m są WYKLUCZANE (pozostałe są aktywne).
+        - Opcja HTML: Jest AKTYWOWANA, jeśli jej numer jest podany w -m (inaczej nieaktywna).
+
+    Args:
+        cmd_menu_choice: String z wyborem z linii poleceń.
+        klucze_kolumn_do_wyboru_rzeczywiste: Lista kluczy kolumn dostępnych do wyboru.
+        numer_opcji_html: Numer opcji HTML.
+
+    Returns:
+        Lista numerów opcji (int), które mają być AKTYWNE, jeśli parsowanie
+        się powiodło. Zwraca None, jeśli cmd_menu_choice nie został podany.
+        Zwraca pustą listę, jeśli cmd_menu_choice był nieprawidłowy.
+    """
+    if not cmd_menu_choice:
+        return None # Brak parametru -m, menu interaktywne zostanie użyte
+
+    # Specjalna obsługa dla -m 0
+    if cmd_menu_choice == "0":
+        print(f"{Fore.CYAN}Parametr -m 0: Zaznaczanie wszystkich dostępnych kolumn (bez opcji HTML).{Style.RESET_ALL}")
+        wszystkie_numery_kolumn = list(range(1, len(klucze_kolumn_do_wyboru_rzeczywiste) + 1))
+        return sorted(wszystkie_numery_kolumn)
+
+    print(f"{Fore.CYAN}Próba przetworzenia wyboru kolumn z linii poleceń: -m {cmd_menu_choice}{Style.RESET_ALL}")
+    
+    numery_wskazane_przez_uzytkownika_set: set[int] = set()
+    is_input_format_valid = False 
+
+    if cmd_menu_choice.isdigit():
+        is_input_format_valid = True 
+        for cyfra_str in cmd_menu_choice:
+            try:
+                numer_wskazany = int(cyfra_str)
+                if (1 <= numer_wskazany <= len(klucze_kolumn_do_wyboru_rzeczywiste)) or \
+                   (numer_wskazany == numer_opcji_html):
+                    numery_wskazane_przez_uzytkownika_set.add(numer_wskazany)
+                else:
+                    print(f"{Fore.YELLOW}Ostrzeżenie: Numer opcji '{cyfra_str}' w parametrze -m jest poza zakresem. Pomijanie tej cyfry.{Style.RESET_ALL}")
+            except ValueError:
+                print(f"{Fore.YELLOW}Ostrzeżenie: Nieprawidłowy znak '{cyfra_str}' w parametrze -m. Cały parametr -m zostanie zignorowany.{Style.RESET_ALL}")
+                is_input_format_valid = False 
+                break 
+        
+        if not is_input_format_valid:
+            print(f"{Fore.YELLOW}Parametr -m '{cmd_menu_choice}' zawierał nieprawidłowe znaki.{Style.RESET_ALL}")
+            return [] 
+
+    else: 
+        print(f"{Fore.YELLOW}Nieprawidłowy format parametru -m '{cmd_menu_choice}' (oczekiwano tylko cyfr, lub '0').{Style.RESET_ALL}")
+        return [] 
+
+    if is_input_format_valid and not numery_wskazane_przez_uzytkownika_set and cmd_menu_choice:
+        print(f"{Fore.YELLOW}Parametr -m '{cmd_menu_choice}' nie zawierał żadnych prawidłowych numerów opcji.{Style.RESET_ALL}")
+        return [] 
+
+    aktywne_opcje_finalne_set: set[int] = set()
+
+    # Logika dla kolumn: aktywne, jeśli NIE ma ich w parametrze -m
+    for i in range(1, len(klucze_kolumn_do_wyboru_rzeczywiste) + 1):
+        if i not in numery_wskazane_przez_uzytkownika_set:
+            aktywne_opcje_finalne_set.add(i)
+
+    # Logika dla opcji HTML: aktywna, jeśli JEJ numer JEST w parametrze -m
+    if numer_opcji_html in numery_wskazane_przez_uzytkownika_set:
+        aktywne_opcje_finalne_set.add(numer_opcji_html)
+    
+    return sorted(list(aktywne_opcje_finalne_set))
+
+
 def wybierz_kolumny_do_wyswietlenia_menu(
     wszystkie_kolumny: Dict[str, Dict[str, Any]] = KOLUMNY_TABELI,
     domyslne_kolumny: List[str] = DOMYSLNE_KOLUMNY_DO_WYSWIETLENIA
@@ -682,9 +761,9 @@ def wybierz_kolumny_do_wyswietlenia_menu(
     tekst_opcji_html = "Uwzględnić wybór w raporcie HTML"
 
     while True:
-        print("\n" + "-" * 60)
-        print(f"Wybierz opcje do wyświetlenia/aktywacji:")
-        print("-" * 60)
+        print("\n" + "-" * 80)
+        print(f"Wybierz kolumny do wyświetlenia i czy uwzględznić wybór w raporcie html")
+        print("-" * 80)
         
         # Wyświetlaj rzeczywiste kolumny
         for i, klucz in enumerate(klucze_do_wyboru_rzeczywiste):
@@ -695,25 +774,26 @@ def wybierz_kolumny_do_wyswietlenia_menu(
         
         # Dodaj opcję HTML na końcu listy
         znacznik_html = f"{Fore.GREEN}[X]{Style.RESET_ALL}" if uwzglednij_w_html_selected else f"{Fore.RED}[ ]{Style.RESET_ALL}"
+        print("-" * 80)
         print(f"  {znacznik_html} {numer_opcji_html}. {tekst_opcji_html}")
         
         liczba_wyswietlonych_opcji_wszystkich = len(klucze_do_wyboru_rzeczywiste) + 1 # +1 dla opcji HTML
-        print("-" * 60)
+        print("-" * 80)
         print(f"Opcje: Wpisz {Fore.LIGHTMAGENTA_EX}numer(y){Style.RESET_ALL} opcji, aby je przełączyć (np. 2{numer_opcji_html}).")
         print(f"       Wpisz '{Fore.LIGHTMAGENTA_EX}a{Style.RESET_ALL}', aby zaznaczyć/odznaczyć wszystkie opcje.")
         print(f"       Wpisz '{Fore.LIGHTMAGENTA_EX}d{Style.RESET_ALL}', aby przywrócić domyślne ustawienia.")
         print(f"       Wpisz '{Fore.LIGHTMAGENTA_EX}q{Style.RESET_ALL}' lub naciśnij {Fore.LIGHTMAGENTA_EX}Enter{Style.RESET_ALL}, aby zatwierdzić wybór.")
-        print("-" * 60)
+        print("-" * 80)
 
         try:
             wybor = input("Twój wybór: ").lower().strip()
 
             if not wybor or wybor == 'q':
-                liczba_linii_do_wyczyszczenia = liczba_wyswietlonych_opcji_wszystkich + 10
+                liczba_linii_do_wyczyszczenia = liczba_wyswietlonych_opcji_wszystkich + 11
                 for _ in range(liczba_linii_do_wyczyszczenia):
                     sys.stdout.write("\033[A\033[K")
                 sys.stdout.flush()
-                sys.stdout.write("\033[A") 
+                # sys.stdout.write("\033[A") 
                 break 
 
             elif wybor == 'a':
@@ -756,7 +836,7 @@ def wybierz_kolumny_do_wyswietlenia_menu(
             else:
                 print(f"{Fore.YELLOW}Nieznana opcja. Spróbuj ponownie.{Style.RESET_ALL}")
 
-            liczba_linii_do_wyczyszczenia = liczba_wyswietlonych_opcji_wszystkich + 11
+            liczba_linii_do_wyczyszczenia = liczba_wyswietlonych_opcji_wszystkich + 12
             for _ in range(liczba_linii_do_wyczyszczenia):
                 sys.stdout.write("\033[A\033[K")
             sys.stdout.flush()
@@ -784,7 +864,8 @@ def wybierz_kolumny_do_wyswietlenia_menu(
 
 def wybierz_kolumny_do_wyswietlenia(
     wszystkie_kolumny_map: Dict[str, Dict[str, Any]] = KOLUMNY_TABELI,
-    domyslne_kolumny_dla_menu: List[str] = DOMYSLNE_KOLUMNY_DO_WYSWIETLENIA
+    domyslne_kolumny_dla_menu: List[str] = DOMYSLNE_KOLUMNY_DO_WYSWIETLENIA,
+    cmd_menu_choice: Optional[str] = None  # Dodano parametr dla wyboru z linii poleceń
 ) -> Tuple[List[str], bool]:
     """
     Wyświetla menu wyboru kolumn i opcji HTML, a następnie tłumaczy
@@ -794,23 +875,42 @@ def wybierz_kolumny_do_wyswietlenia(
         wszystkie_kolumny_map: Słownik definicji wszystkich dostępnych kolumn.
         domyslne_kolumny_dla_menu: Lista kluczy kolumn, które będą domyślnie
                                    zaznaczone w menu.
+        cmd_menu_choice: Opcjonalny string z wyborem z linii poleceń (np. "17").
+
 
     Returns:
         Krotka: (Lista kluczy wybranych kolumn do wyświetlenia,
                    wartość boolowska dla opcji "Uwzględnić wybór w raporcie HTML").
     """
-    # Krok 1: Użytkownik wybiera opcje numerycznie za pomocą menu
-    wybrane_numery_opcji = wybierz_kolumny_do_wyswietlenia_menu(wszystkie_kolumny_map, domyslne_kolumny_dla_menu)
-
+    # Usunięto pierwsze, niepotrzebne wywołanie wybierz_kolumny_do_wyswietlenia_menu
     oryginalne_klucze_wszystkich_kolumn = list(wszystkie_kolumny_map.keys())
     klucze_kolumn_do_wyboru_rzeczywiste = [k for k in oryginalne_klucze_wszystkich_kolumn if k != 'lp']
 
     numer_opcji_html = len(klucze_kolumn_do_wyboru_rzeczywiste) + 1
 
+    wybrane_numery_opcji: Optional[List[int]] = _przetworz_wybor_menu_z_linii_polecen(
+        cmd_menu_choice,
+        klucze_kolumn_do_wyboru_rzeczywiste,
+        numer_opcji_html
+    )
+
+    if wybrane_numery_opcji is not None:
+        # Jeśli _przetworz_wybor_menu_z_linii_polecen zwróciło listę (nawet pustą, jeśli -m było, ale bez prawidłowych opcji)
+        if wybrane_numery_opcji: # Sprawdź, czy lista nie jest pusta
+            print(f"{Fore.GREEN}Zastosowano wybór kolumn z linii poleceń. Wybrane numery opcji: {wybrane_numery_opcji}{Style.RESET_ALL}")
+        else:
+            print(f"{Fore.YELLOW}Parametr -m '{cmd_menu_choice}' nie zawierał prawidłowych opcji. Uruchamianie interaktywnego menu wyboru kolumn...{Style.RESET_ALL}")
+            wybrane_numery_opcji = wybierz_kolumny_do_wyswietlenia_menu(wszystkie_kolumny_map, domyslne_kolumny_dla_menu)
+    else:
+        # Użytkownik wybiera opcje numerycznie za pomocą interaktywnego menu
+        wybrane_numery_opcji = wybierz_kolumny_do_wyswietlenia_menu(wszystkie_kolumny_map, domyslne_kolumny_dla_menu)
     finalnie_wybrane_klucze_kolumn_temp: List[str] = []
     uwzglednij_w_html_wybrane = False
 
-    for numer_opcji in wybrane_numery_opcji:
+    # Upewnijmy się, że iterujemy po liście, nawet jeśli jest pusta
+    iterowalne_numery_opcji = wybrane_numery_opcji if wybrane_numery_opcji is not None else []
+
+    for numer_opcji in iterowalne_numery_opcji:
         if 1 <= numer_opcji <= len(klucze_kolumn_do_wyboru_rzeczywiste):
             # To jest numer rzeczywistej kolumny
             klucz_kolumny = klucze_kolumn_do_wyboru_rzeczywiste[numer_opcji - 1]
@@ -818,14 +918,12 @@ def wybierz_kolumny_do_wyswietlenia(
         elif numer_opcji == numer_opcji_html:
             # To jest numer opcji HTML
             uwzglednij_w_html_wybrane = True
-
     # Przygotowanie finalnej listy kluczy kolumn, z 'lp' na początku i zachowaniem oryginalnej kolejności
     # dla pozostałych wybranych kolumn.
     ostateczne_klucze_do_wyswietlenia: List[str] = ['lp']
     for klucz in oryginalne_klucze_wszystkich_kolumn:
         if klucz != 'lp' and klucz in finalnie_wybrane_klucze_kolumn_temp:
             ostateczne_klucze_do_wyswietlenia.append(klucz)
-
     return ostateczne_klucze_do_wyswietlenia, uwzglednij_w_html_wybrane
 
 def pobierz_nazwe_producenta_oui(mac: Optional[str], baza_oui: Dict[str, str]) -> str:
@@ -2150,15 +2248,42 @@ def pobierz_baze_z_tekstu(baza_oui_txt: str) -> Dict[str, str]:
         print("Ostrzeżenie: Nie udało się sparsować żadnych wpisów OUI z pobranego tekstu.")
     return baza_oui
 
-def pobierz_i_zweryfikuj_prefiks() -> Optional[str]:
+def pobierz_i_zweryfikuj_prefiks(cmd_prefix: Optional[str] = None) -> Optional[str]:
     """
     Pobiera prefiks sieciowy. Jeśli zostanie wykryty automatycznie,
     prosi użytkownika o potwierdzenie lub podanie innego.
     W przeciwnym razie prosi o ręczne wprowadzenie.
     Czyści linię promptu po poprawnym wyborze.
+    
+    Args:
+        cmd_prefix: Opcjonalny prefiks sieciowy podany z linii poleceń.
     """
-    siec_prefix_automatyczny = pobierz_prefiks_sieciowy()
+
     potwierdzony_prefiks: Optional[str] = None
+
+    if cmd_prefix:
+        print(f"{Fore.CYAN}Próba użycia prefiksu sieciowego z linii poleceń: -p {cmd_prefix}{Style.RESET_ALL}")
+        prefiks_do_walidacji = cmd_prefix.strip()
+        if not prefiks_do_walidacji.endswith("."):
+            prefiks_do_walidacji += "."
+        
+        if re.match(r"^(\d{1,3}\.){3}$", prefiks_do_walidacji):
+            parts = prefiks_do_walidacji.split('.')[:-1]
+            try:
+                if all(0 <= int(p) <= 255 for p in parts):
+                    potwierdzony_prefiks = prefiks_do_walidacji
+                    print(f"{Fore.GREEN}Używany prefiks sieciowy z linii poleceń: {potwierdzony_prefiks}{Style.RESET_ALL}")
+                    return potwierdzony_prefiks
+                else:
+                    print(f"{Fore.YELLOW}Ostrzeżenie: Prefiks z linii poleceń '{cmd_prefix}' ma nieprawidłowe oktety. Przechodzenie do trybu interaktywnego.{Style.RESET_ALL}")
+            except ValueError:
+                print(f"{Fore.YELLOW}Ostrzeżenie: Prefiks z linii poleceń '{cmd_prefix}' zawiera nie-liczbowe części. Przechodzenie do trybu interaktywnego.{Style.RESET_ALL}")
+        else:
+            print(f"{Fore.YELLOW}Ostrzeżenie: Prefiks z linii poleceń '{cmd_prefix}' ma niepoprawny format. Przechodzenie do trybu interaktywnego.{Style.RESET_ALL}")
+        # Jeśli walidacja prefiksu z linii poleceń nie powiodła się, potwierdzony_prefiks pozostaje None,
+        # a skrypt przejdzie do części interaktywnej poniżej.
+
+    siec_prefix_automatyczny = pobierz_prefiks_sieciowy()
 
     if siec_prefix_automatyczny:
         # Automatyczne wykrywanie powiodło się - zapytaj użytkownika
@@ -2585,7 +2710,7 @@ FF:FF:FF:FF:FF:FF PrzykładowaNazwa"""
                     print(f"{Fore.YELLOW}Ostrzeżenie w '{nazwa_pliku}' (linia {line_num}): Nie udało się sparsować MAC adresu. Linia: '{line}'{Style.RESET_ALL}")
         
         if mac_nazwy_map:
-            print(f"\n{Fore.GREEN}Pomyślnie wczytano {len(mac_nazwy_map)} niestandardowych nazw urządzeń.{Style.RESET_ALL}")
+            print(f"{Fore.GREEN}Pomyślnie wczytano {len(mac_nazwy_map)} niestandardowych nazw urządzeń.{Style.RESET_ALL}")
         else:
             print(f"{Fore.YELLOW}Nie wczytano żadnych niestandardowych nazw urządzeń z pliku '{nazwa_pliku}' (plik może być pusty lub zawierać tylko komentarze).{Style.RESET_ALL}")
 
@@ -3107,8 +3232,55 @@ def zapytaj_i_otworz_raport_html(sciezka_do_pliku_html: Optional[str]) -> None:
 
 # --- Główna część skryptu ---
 if __name__ == "__main__":
-    # try:
+    try:
+        # --- Parsowanie argumentów linii poleceń ---
+        parser = argparse.ArgumentParser(
+            description="Skaner sieci lokalnej.",
+            # Zmieniamy epilog, aby nie pokazywał domyślnego błędu, gdy argument jest bez wartości
+            # Można też użyć add_help=False i własnej obsługi -h, ale to bardziej skomplikowane.
+            # Na razie standardowy help wystarczy.
+        )
+        # Definiujemy unikalne wartości sentinelowe do wykrycia, czy flaga była podana bez argumentu
+        SENTINEL_NO_VALUE_PREFIX = object()
+        SENTINEL_NO_VALUE_MENU = object()
+
+        parser.add_argument(
+            "-p", "--prefix",
+            nargs='?',  # Argument jest opcjonalny
+            const=SENTINEL_NO_VALUE_PREFIX,  # Wartość, jeśli -p jest podane bez argumentu
+            default=None,  # Wartość, jeśli -p nie ma w ogóle
+            type=str,      # Nadal oczekujemy stringa, jeśli argument jest podany
+            help="Prefiks sieciowy do skanowania (np. 192.168.1.). Pomija interaktywne pytanie."
+        )
+        parser.add_argument(
+            "-m", "--menu-choice",
+            nargs='?',  # Argument jest opcjonalny
+            const=SENTINEL_NO_VALUE_MENU,  # Wartość, jeśli -m jest podane bez argumentu
+            default=None,  # Wartość, jeśli -m nie ma w ogóle
+            type=str,      # Nadal oczekujemy stringa, jeśli argument jest podany
+            help="Wybór opcji menu dla kolumn i raportu HTML (np. '17'). Pomija interaktywne menu."
+        )
+        args = parser.parse_args()
+        # --- Koniec parsowania argumentów ---
+
+        # Zamiast bezpośredniego wywołania sys.exit(0) w zainstaluj_pakiet,
+        # można by zwrócić flagę i obsłużyć wyjście tutaj, jeśli to konieczne.
+
+
         # --- Sprawdzenie aktualizacji na początku ---
+        # Sprawdź, czy argumenty zostały podane bez wartości i potraktuj je jako None
+        cmd_prefix_to_use = args.prefix
+        if args.prefix is SENTINEL_NO_VALUE_PREFIX:
+            print(f"{Fore.YELLOW}Ostrzeżenie: Parametr -p został podany bez wartości. Prefiks zostanie pobrany interaktywnie.{Style.RESET_ALL}")
+            cmd_prefix_to_use = None
+
+        cmd_menu_choice_to_use = args.menu_choice
+        if args.menu_choice is SENTINEL_NO_VALUE_MENU:
+            print(f"{Fore.YELLOW}Ostrzeżenie: Parametr -m został podany bez wartości. Menu wyboru kolumn zostanie wyświetlone.{Style.RESET_ALL}")
+            cmd_menu_choice_to_use = None
+        # --- Koniec sprawdzania argumentów ---
+
+
         sprawdz_i_zaproponuj_aktualizacje()
         # --- Koniec sprawdzania aktualizacji ---
         wyswietl_tekst_w_linii("-",DEFAULT_LINE_WIDTH,"Skaner Sieci Lokalnej",Fore.YELLOW,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
@@ -3132,11 +3304,13 @@ if __name__ == "__main__":
         print(f"Adres MAC komputera: {host_mac if host_mac else 'Nieznany'}")
 
         # Pobierz i zweryfikuj prefiks sieciowy używając nowej funkcji
-        siec_prefix = pobierz_i_zweryfikuj_prefiks()
+        siec_prefix = pobierz_i_zweryfikuj_prefiks(cmd_prefix=cmd_prefix_to_use)
         # Wybierz kolumny do wyświetlenia w terminalu i zdecyduj o kolumnach dla HTML
         kolumny_dla_terminalu, uzyc_wybranych_w_html = wybierz_kolumny_do_wyswietlenia(
             wszystkie_kolumny_map=KOLUMNY_TABELI,
-            domyslne_kolumny_dla_menu=DOMYSLNE_KOLUMNY_DO_WYSWIETLENIA)
+            domyslne_kolumny_dla_menu=DOMYSLNE_KOLUMNY_DO_WYSWIETLENIA,
+            cmd_menu_choice=cmd_menu_choice_to_use) # Przekaż przetworzony wybór z linii poleceń
+        
         # Sprawdź, czy udało się uzyskać prefiks
         if siec_prefix is None:
             print(f"{Fore.RED}Nie udało się ustalić prefiksu sieciowego. Zakończono.{Style.RESET_ALL}")
@@ -3237,5 +3411,6 @@ if __name__ == "__main__":
         # --- KONIEC PYTANIA O OTWARCIE PLIKU HTML ---
 
         wyswietl_tekst_w_linii("-",DEFAULT_LINE_WIDTH,"Skanowanie zakończone. Przewiń wyżej, aby zobaczyć wyniki.",Fore.LIGHTCYAN_EX,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
-
+    except KeyboardInterrupt:
+        obsluz_przerwanie_uzytkownika()
         sys.exit(0) # Użyj standardowego wyjścia
