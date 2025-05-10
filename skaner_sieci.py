@@ -154,6 +154,10 @@ except ImportError:
 
 # --- Konfiguracja ---
 
+# --- Konfiguracja Aktualizacji Skryptu ---
+SKRYPT_AKTUALNA_WERSJA = "0.0.3" # Zmień na aktualną wersję Twojego skryptu
+URL_INFORMACJI_O_WERSJI = "https://raw.githubusercontent.com/endiendi/skaner_sieci/main/version_info.json"
+
 # Prefiksy adresów multicast, które chcemy wykluczyć ze skanowania
 MULTICAST_PREFIXES: List[str] = ["224.", "239.", "ff02."]
 # Domyślny zakres hostów do pingowania
@@ -457,6 +461,105 @@ OS_FILTERS: List[Dict[str, Any]] = [
     # Reguły zapasowe (UNKNOWN_PORTS, UNKNOWN_NO_PORTS) są obsługiwane na końcu, jeśli żaden filtr nie pasuje.
 ]
 
+# --- Funkcje do sprawdzania i aktualizacji wersji skryptu ---
+def porownaj_wersje(wersja1_str: str, wersja2_str: str) -> int:
+    """
+    Porównuje dwie wersje w formacie X.Y.Z.
+    Zwraca:
+        -1 jeśli wersja1 < wersja2
+         0 jeśli wersja1 == wersja2
+         1 jeśli wersja1 > wersja2
+    """
+    w1_parts = list(map(int, wersja1_str.split('.')))
+    w2_parts = list(map(int, wersja2_str.split('.')))
+
+    for i in range(max(len(w1_parts), len(w2_parts))):
+        v1_part = w1_parts[i] if i < len(w1_parts) else 0
+        v2_part = w2_parts[i] if i < len(w2_parts) else 0
+        if v1_part < v2_part:
+            return -1
+        if v1_part > v2_part:
+            return 1
+    return 0
+
+def pobierz_informacje_o_najnowszej_wersji(url: str) -> Optional[Dict[str, str]]:
+    """Pobiera informacje o najnowszej wersji z podanego URL."""
+    if not REQUESTS_AVAILABLE:
+        print(f"{Fore.YELLOW}Informacja: Biblioteka 'requests' nie jest dostępna. Sprawdzanie aktualizacji niemożliwe.{Style.RESET_ALL}")
+        return None
+    try:
+        print(f"{Fore.CYAN}Sprawdzanie dostępności nowej wersji skryptu...{Style.RESET_ALL}")
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        print(f"{Fore.YELLOW}Nie udało się pobrać informacji o wersji: {e}{Style.RESET_ALL}")
+        return None
+    except json.JSONDecodeError:
+        print(f"{Fore.RED}Błąd: Nie udało się sparsować informacji o wersji (niepoprawny JSON).{Style.RESET_ALL}")
+        return None
+
+def pobierz_i_zapisz_aktualizacje(url_pobierania: str, nazwa_pliku_docelowego: str) -> bool:
+    """Pobiera plik z URL i zapisuje go lokalnie."""
+    if not REQUESTS_AVAILABLE:
+        return False # Już sprawdzane wcześniej, ale dla pewności
+    try:
+        print(f"{Fore.CYAN}Pobieranie aktualizacji z: {url_pobierania}...{Style.RESET_ALL}")
+        response = requests.get(url_pobierania, timeout=30, stream=True)
+        response.raise_for_status()
+        with open(nazwa_pliku_docelowego, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        print(f"{Fore.GREEN}Aktualizacja została pomyślnie pobrana i zapisana jako: {nazwa_pliku_docelowego}{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}Aby użyć nowej wersji, zastąp stary plik skryptu tym nowo pobranym i uruchom skrypt ponownie.{Style.RESET_ALL}")
+        return True
+    except requests.exceptions.RequestException as e:
+        print(f"{Fore.RED}Błąd podczas pobierania aktualizacji: {e}{Style.RESET_ALL}")
+        return False
+    except IOError as e:
+        print(f"{Fore.RED}Błąd podczas zapisywania aktualizacji do pliku '{nazwa_pliku_docelowego}': {e}{Style.RESET_ALL}")
+        return False
+
+def sprawdz_i_zaproponuj_aktualizacje():
+    """Główna funkcja sprawdzająca wersję i proponująca aktualizację."""
+    info_o_wersji = pobierz_informacje_o_najnowszej_wersji(URL_INFORMACJI_O_WERSJI)
+
+    if info_o_wersji:
+        najnowsza_wersja_str = info_o_wersji.get("latest_version")
+        url_pobierania = info_o_wersji.get("download_url")
+        changelog = info_o_wersji.get("changelog", "Brak informacji o zmianach.")
+
+        if not najnowsza_wersja_str or not url_pobierania:
+            print(f"{Fore.YELLOW}Ostrzeżenie: Niekompletne informacje o wersji w pliku online.{Style.RESET_ALL}")
+            return
+
+        print(f"Aktualna wersja skryptu: {SKRYPT_AKTUALNA_WERSJA}")
+        print(f"Najnowsza dostępna wersja: {najnowsza_wersja_str}")
+
+        if porownaj_wersje(SKRYPT_AKTUALNA_WERSJA, najnowsza_wersja_str) < 0:
+            print(f"{Fore.GREEN}Dostępna jest nowa wersja skryptu: {najnowsza_wersja_str}!{Style.RESET_ALL}")
+            print(f"{Fore.CYAN}Zmiany w nowej wersji: {changelog}{Style.RESET_ALL}")
+            try:
+                odpowiedz = input(f"Czy chcesz pobrać najnowszą wersję teraz? ({Fore.LIGHTMAGENTA_EX}t/n{Style.RESET_ALL}): ").lower().strip()
+                if odpowiedz.startswith('t') or odpowiedz.startswith('y'):
+                    nazwa_bazowa, rozszerzenie = os.path.splitext(os.path.basename(__file__))
+                    nazwa_nowego_pliku = f"{nazwa_bazowa}_v{najnowsza_wersja_str.replace('.', '_')}{rozszerzenie}"
+                    if pobierz_i_zapisz_aktualizacje(url_pobierania, nazwa_nowego_pliku):
+                        # Można tu dodać sugestię, aby użytkownik zakończył bieżący skrypt
+                        print(f"{Fore.CYAN}Możesz teraz zakończyć działanie tego skryptu (Ctrl+C) i uruchomić nową wersję.{Style.RESET_ALL}")
+                    else:
+                        print(f"{Fore.RED}Pobieranie aktualizacji nie powiodło się.{Style.RESET_ALL}")
+                else:
+                    print("Pobieranie aktualizacji pominięte.")
+            except (EOFError, KeyboardInterrupt):
+                print("\nPobieranie aktualizacji przerwane przez użytkownika.")
+        else:
+            print(f"{Fore.GREEN}Używasz najnowszej wersji skryptu ({SKRYPT_AKTUALNA_WERSJA}).{Style.RESET_ALL}")
+    else:
+        print(f"{Fore.YELLOW}Nie można było sprawdzić dostępności aktualizacji.{Style.RESET_ALL}")
+    wyswietl_tekst_w_linii("-", DEFAULT_LINE_WIDTH, "", Fore.LIGHTCYAN_EX, Fore.LIGHTCYAN_EX, dodaj_odstepy=False)
+
+
 def sprawdz_i_utworz_plik(nazwa_pliku: str, przykladowa_tresc: Optional[str] = None) -> None:
     """
     Sprawdza, czy plik istnieje w tym samym katalogu co skrypt.
@@ -543,42 +646,62 @@ def pobierz_tabele_arp() -> Optional[str]:
         return None
 
 
-def wybierz_kolumny_do_wyswietlenia(
+def wybierz_kolumny_do_wyswietlenia_menu(
     wszystkie_kolumny: Dict[str, Dict[str, Any]] = KOLUMNY_TABELI,
     domyslne_kolumny: List[str] = DOMYSLNE_KOLUMNY_DO_WYSWIETLENIA
-) -> List[str]:
+) -> List[int]: # Funkcja zwraca listę numerów
     """
-    Pozwala użytkownikowi interaktywnie wybrać kolumny do wyświetlenia w tabeli.
+    Pozwala użytkownikowi interaktywnie wybrać kolumny do wyświetlenia w tabeli
+    oraz czy uwzględnić ten wybór w raporcie HTML jako jedną z opcji.
+    Zwraca listę numerów (1-based) wszystkich wybranych opcji.
 
     Args:
         wszystkie_kolumny: Słownik definicji wszystkich dostępnych kolumn.
         domyslne_kolumny: Lista kluczy kolumn wybranych domyślnie.
 
     Returns:
-        Lista kluczy wybranych kolumn.
+        Lista numerów (1-based) wybranych opcji (kolumn oraz opcji HTML).
     """
     # Pobierz klucze w oryginalnej kolejności
     oryginalne_klucze = list(wszystkie_kolumny.keys())
     # Klucze dostępne do wyboru przez użytkownika (bez 'lp')
-    klucze_do_wyboru = [k for k in oryginalne_klucze if k != 'lp']
-    # Klucze aktualnie wybrane przez użytkownika (bez 'lp', które jest dodawane na końcu)
-    wybrane_klucze_uzytkownika = [k for k in domyslne_kolumny if k != 'lp']
+    klucze_do_wyboru_rzeczywiste = [k for k in oryginalne_klucze if k != 'lp']
+    
+    # Inicjalizacja listy numerów wybranych rzeczywistych kolumn
+    wybrane_numery_kolumn_rzeczywistych: List[int] = []
+    domyslne_klucze_bez_lp = [k for k in domyslne_kolumny if k != 'lp']
+    for i, key_in_choosable in enumerate(klucze_do_wyboru_rzeczywiste):
+        if key_in_choosable in domyslne_klucze_bez_lp:
+            wybrane_numery_kolumn_rzeczywistych.append(i + 1) # 1-based numer
+    
+    # Stan dla opcji HTML
+    uwzglednij_w_html_selected = False # Domyślnie zaznaczone
+
+    # Numer opcji HTML będzie następnym numerem po rzeczywistych kolumnach
+    numer_opcji_html = len(klucze_do_wyboru_rzeczywiste) + 1
+    tekst_opcji_html = "Uwzględnić wybór w raporcie HTML"
 
     while True:
         print("\n" + "-" * 60)
-        print(f"Wybierz kolumny do wyświetlenia:")
+        print(f"Wybierz opcje do wyświetlenia/aktywacji:")
         print("-" * 60)
-        # Wyświetlaj tylko kolumny dostępne do wyboru
-        for i, klucz in enumerate(klucze_do_wyboru):
-            # Sprawdzaj obecność w `wybrane_klucze_uzytkownika`
-            znacznik = f"{Fore.GREEN}[X]{Style.RESET_ALL}" if klucz in wybrane_klucze_uzytkownika else f"{Fore.RED}[ ]{Style.RESET_ALL}"
+        
+        # Wyświetlaj rzeczywiste kolumny
+        for i, klucz in enumerate(klucze_do_wyboru_rzeczywiste):
+            numer_biezacej_kolumny = i + 1
+            znacznik = f"{Fore.GREEN}[X]{Style.RESET_ALL}" if numer_biezacej_kolumny in wybrane_numery_kolumn_rzeczywistych else f"{Fore.RED}[ ]{Style.RESET_ALL}"
             naglowek = wszystkie_kolumny[klucz]['naglowek']
-            print(f"  {znacznik} {i+1}. {naglowek} ({klucz})")
-
+            print(f"  {znacznik} {numer_biezacej_kolumny}. {naglowek} ({klucz})")
+        
+        # Dodaj opcję HTML na końcu listy
+        znacznik_html = f"{Fore.GREEN}[X]{Style.RESET_ALL}" if uwzglednij_w_html_selected else f"{Fore.RED}[ ]{Style.RESET_ALL}"
+        print(f"  {znacznik_html} {numer_opcji_html}. {tekst_opcji_html}")
+        
+        liczba_wyswietlonych_opcji_wszystkich = len(klucze_do_wyboru_rzeczywiste) + 1 # +1 dla opcji HTML
         print("-" * 60)
-        print(f"Opcje: Wpisz {Fore.LIGHTMAGENTA_EX}numer(y){Style.RESET_ALL} kolumn, aby je przełączyć (np. 24).")
-        print(f"       Wpisz '{Fore.LIGHTMAGENTA_EX}a{Style.RESET_ALL}', aby zaznaczyć/odznaczyć wszystkie.")
-        print(f"       Wpisz '{Fore.LIGHTMAGENTA_EX}d{Style.RESET_ALL}', aby przywrócić domyślne.")
+        print(f"Opcje: Wpisz {Fore.LIGHTMAGENTA_EX}numer(y){Style.RESET_ALL} opcji, aby je przełączyć (np. 2{numer_opcji_html}).")
+        print(f"       Wpisz '{Fore.LIGHTMAGENTA_EX}a{Style.RESET_ALL}', aby zaznaczyć/odznaczyć wszystkie opcje.")
+        print(f"       Wpisz '{Fore.LIGHTMAGENTA_EX}d{Style.RESET_ALL}', aby przywrócić domyślne ustawienia.")
         print(f"       Wpisz '{Fore.LIGHTMAGENTA_EX}q{Style.RESET_ALL}' lub naciśnij {Fore.LIGHTMAGENTA_EX}Enter{Style.RESET_ALL}, aby zatwierdzić wybór.")
         print("-" * 60)
 
@@ -586,76 +709,124 @@ def wybierz_kolumny_do_wyswietlenia(
             wybor = input("Twój wybór: ").lower().strip()
 
             if not wybor or wybor == 'q':
-                # --- CZYSZCZENIE ---
-                # Przesuń kursor o odpowiednią liczbę linii w górę i wyczyść
-                liczba_linii_do_wyczyszczenia = len(klucze_do_wyboru) + 10 # Linie z kolumnami + opcje/separatory + nagłówek
+                liczba_linii_do_wyczyszczenia = liczba_wyswietlonych_opcji_wszystkich + 10
                 for _ in range(liczba_linii_do_wyczyszczenia):
                     sys.stdout.write("\033[A\033[K")
                 sys.stdout.flush()
-                # --- KONIEC CZYSZCZENIA ---
-                # Dodaj 'lp' na początku przed zwróceniem
-                finalne_wybrane = ['lp'] + [k for k in oryginalne_klucze if k in wybrane_klucze_uzytkownika]
-                # print(f"Wybrane kolumny: {', '.join(finalne_wybrane)}")
-                sys.stdout.write("\033[A") # Przesuń kursor w górę
-                break # Zakończ pętlę
-
-
+                sys.stdout.write("\033[A") 
+                break 
 
             elif wybor == 'a':
-                # Jeśli wszystkie są już zaznaczone, odznacz wszystkie. W przeciwnym razie zaznacz wszystkie.
-                if set(wybrane_klucze_uzytkownika) == set(klucze_do_wyboru):
-                    wybrane_klucze_uzytkownika.clear()
+                # Sprawdź, czy wszystkie rzeczywiste kolumny ORAZ opcja HTML są zaznaczone
+                wszystkie_rzeczywiste_zaznaczone = len(wybrane_numery_kolumn_rzeczywistych) == len(klucze_do_wyboru_rzeczywiste)
+                if wszystkie_rzeczywiste_zaznaczone and uwzglednij_w_html_selected:
+                    wybrane_numery_kolumn_rzeczywistych.clear()
+                    uwzglednij_w_html_selected = False
                 else:
-                    wybrane_klucze_uzytkownika = list(klucze_do_wyboru)
+                    wybrane_numery_kolumn_rzeczywistych = [i + 1 for i in range(len(klucze_do_wyboru_rzeczywiste))]
+                    uwzglednij_w_html_selected = True
 
             elif wybor == 'd':
-                # Przywróć domyślne, ale bez 'lp'
-                wybrane_klucze_uzytkownika = [k for k in domyslne_kolumny if k != 'lp']
+                # Przywróć domyślne dla rzeczywistych kolumn
+                wybrane_numery_kolumn_rzeczywistych.clear()
+                for i, key_in_choosable in enumerate(klucze_do_wyboru_rzeczywiste):
+                    if key_in_choosable in domyslne_klucze_bez_lp:
+                        wybrane_numery_kolumn_rzeczywistych.append(i + 1)
+                # Przywróć domyślne dla opcji HTML
+                uwzglednij_w_html_selected = True
 
             elif wybor.isdigit():
-                # Iteruj przez każdą cyfrę w wprowadzonym ciągu
-                przetworzono_poprawnie = True
-                for cyfra in wybor:
+                for cyfra_str in wybor:
                     try:
-                        indeks = int(cyfra) - 1
-                        if 0 <= indeks < len(klucze_do_wyboru):
-                            klucz_do_przelaczenia = klucze_do_wyboru[indeks]
-                            if klucz_do_przelaczenia in wybrane_klucze_uzytkownika:
-                                wybrane_klucze_uzytkownika.remove(klucz_do_przelaczenia)
+                        numer_wybrany = int(cyfra_str)
+                        
+                        if 1 <= numer_wybrany <= len(klucze_do_wyboru_rzeczywiste):
+                            # Wybór dotyczy rzeczywistej kolumny
+                            if numer_wybrany in wybrane_numery_kolumn_rzeczywistych:
+                                wybrane_numery_kolumn_rzeczywistych.remove(numer_wybrany)
                             else:
-                                wybrane_klucze_uzytkownika.append(klucz_do_przelaczenia)
+                                wybrane_numery_kolumn_rzeczywistych.append(numer_wybrany)
+                        elif numer_wybrany == numer_opcji_html:
+                            # Wybór dotyczy opcji HTML
+                            uwzglednij_w_html_selected = not uwzglednij_w_html_selected
                         else:
-                            print(f"{Fore.YELLOW}Nieprawidłowy numer kolumny: {cyfra}. Pomijanie.{Style.RESET_ALL}")
-                            przetworzono_poprawnie = False
-                    except ValueError: # Na wypadek gdyby cyfra nie była cyfrą (chociaż isdigit() powinno to wyłapać)
-                        print(f"{Fore.YELLOW}Nieprawidłowy znak w sekwencji: '{cyfra}'. Pomijanie.{Style.RESET_ALL}")
-                        przetworzono_poprawnie = False
-                else:
-                    pass # Jeśli nie było błędu dla tej cyfry, kontynuuj
+                            print(f"{Fore.YELLOW}Nieprawidłowy numer opcji: {cyfra_str}. Pomijanie.{Style.RESET_ALL}")
+                    except ValueError:
+                        print(f"{Fore.YELLOW}Nieprawidłowy znak w sekwencji: '{cyfra_str}'. Pomijanie.{Style.RESET_ALL}")
             else:
                 print(f"{Fore.YELLOW}Nieznana opcja. Spróbuj ponownie.{Style.RESET_ALL}")
 
-            # --- CZYSZCZENIE PO KAŻDEJ AKCJI (oprócz wyjścia) ---
-            # Liczba linii: nagłówek(3) + kolumny(len) + sep(1) + opcje(3) + sep(1) + input(1) + ew. błąd(1) = len + 11
-            liczba_linii_do_wyczyszczenia = len(klucze_do_wyboru) + 11
+            liczba_linii_do_wyczyszczenia = liczba_wyswietlonych_opcji_wszystkich + 11
             for _ in range(liczba_linii_do_wyczyszczenia):
                 sys.stdout.write("\033[A\033[K")
             sys.stdout.flush()
-            # --- KONIEC CZYSZCZENIA ---
-
 
         except (EOFError, KeyboardInterrupt):
             obsluz_przerwanie_uzytkownika()
         except Exception as e:
              print(f"\n{Fore.RED}Błąd podczas przetwarzania wyboru: {e}{Style.RESET_ALL}")
              # W razie błędu, bezpieczniej wrócić do domyślnych
-             print("Przywracanie domyślnych kolumn.")
-             wybrane_klucze_uzytkownika = [k for k in domyslne_kolumny if k != 'lp']
-             finalne_wybrane = ['lp'] + [k for k in oryginalne_klucze if k in wybrane_klucze_uzytkownika]
+             print("Przywracanie domyślnych ustawień.")
+             wybrane_numery_kolumn_rzeczywistych.clear()
+             for i, key_in_choosable in enumerate(klucze_do_wyboru_rzeczywiste):
+                 if key_in_choosable in domyslne_klucze_bez_lp:
+                     wybrane_numery_kolumn_rzeczywistych.append(i + 1)
+             uwzglednij_w_html_selected = True
              break
 
-    # Zwróć ostatecznie wybrane klucze, upewniając się, że 'lp' jest na początku
-    return finalne_wybrane
+    # Przygotowanie finalnej listy wybranych numerów
+    finalne_wybrane_numery_wszystkie = list(set(wybrane_numery_kolumn_rzeczywistych)) # Unikalne numery kolumn
+    if uwzglednij_w_html_selected:
+        if numer_opcji_html not in finalne_wybrane_numery_wszystkie: # Dodaj tylko jeśli jeszcze nie ma
+            finalne_wybrane_numery_wszystkie.append(numer_opcji_html)
+    
+    return sorted(list(set(finalne_wybrane_numery_wszystkie))) # Posortuj i upewnij się o unikalności
+
+def wybierz_kolumny_do_wyswietlenia(
+    wszystkie_kolumny_map: Dict[str, Dict[str, Any]] = KOLUMNY_TABELI,
+    domyslne_kolumny_dla_menu: List[str] = DOMYSLNE_KOLUMNY_DO_WYSWIETLENIA
+) -> Tuple[List[str], bool]:
+    """
+    Wyświetla menu wyboru kolumn i opcji HTML, a następnie tłumaczy
+    numeryczny wybór użytkownika na listę kluczy kolumn i flagę HTML.
+
+    Args:
+        wszystkie_kolumny_map: Słownik definicji wszystkich dostępnych kolumn.
+        domyslne_kolumny_dla_menu: Lista kluczy kolumn, które będą domyślnie
+                                   zaznaczone w menu.
+
+    Returns:
+        Krotka: (Lista kluczy wybranych kolumn do wyświetlenia,
+                   wartość boolowska dla opcji "Uwzględnić wybór w raporcie HTML").
+    """
+    # Krok 1: Użytkownik wybiera opcje numerycznie za pomocą menu
+    wybrane_numery_opcji = wybierz_kolumny_do_wyswietlenia_menu(wszystkie_kolumny_map, domyslne_kolumny_dla_menu)
+
+    oryginalne_klucze_wszystkich_kolumn = list(wszystkie_kolumny_map.keys())
+    klucze_kolumn_do_wyboru_rzeczywiste = [k for k in oryginalne_klucze_wszystkich_kolumn if k != 'lp']
+
+    numer_opcji_html = len(klucze_kolumn_do_wyboru_rzeczywiste) + 1
+
+    finalnie_wybrane_klucze_kolumn_temp: List[str] = []
+    uwzglednij_w_html_wybrane = False
+
+    for numer_opcji in wybrane_numery_opcji:
+        if 1 <= numer_opcji <= len(klucze_kolumn_do_wyboru_rzeczywiste):
+            # To jest numer rzeczywistej kolumny
+            klucz_kolumny = klucze_kolumn_do_wyboru_rzeczywiste[numer_opcji - 1]
+            finalnie_wybrane_klucze_kolumn_temp.append(klucz_kolumny)
+        elif numer_opcji == numer_opcji_html:
+            # To jest numer opcji HTML
+            uwzglednij_w_html_wybrane = True
+
+    # Przygotowanie finalnej listy kluczy kolumn, z 'lp' na początku i zachowaniem oryginalnej kolejności
+    # dla pozostałych wybranych kolumn.
+    ostateczne_klucze_do_wyswietlenia: List[str] = ['lp']
+    for klucz in oryginalne_klucze_wszystkich_kolumn:
+        if klucz != 'lp' and klucz in finalnie_wybrane_klucze_kolumn_temp:
+            ostateczne_klucze_do_wyswietlenia.append(klucz)
+
+    return ostateczne_klucze_do_wyswietlenia, uwzglednij_w_html_wybrane
 
 def pobierz_nazwe_producenta_oui(mac: Optional[str], baza_oui: Dict[str, str]) -> str:
     """
@@ -2937,6 +3108,9 @@ def zapytaj_i_otworz_raport_html(sciezka_do_pliku_html: Optional[str]) -> None:
 # --- Główna część skryptu ---
 if __name__ == "__main__":
     # try:
+        # --- Sprawdzenie aktualizacji na początku ---
+        sprawdz_i_zaproponuj_aktualizacje()
+        # --- Koniec sprawdzania aktualizacji ---
         wyswietl_tekst_w_linii("-",DEFAULT_LINE_WIDTH,"Skaner Sieci Lokalnej",Fore.YELLOW,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
         wszystkie_ip, glowny_ip = pobierz_wszystkie_aktywne_ip()
         # Sprawdź obecność VPN lub inne i wyświetl ostrzeżenie tylko jeśli psutil jest dostępny
@@ -2959,7 +3133,10 @@ if __name__ == "__main__":
 
         # Pobierz i zweryfikuj prefiks sieciowy używając nowej funkcji
         siec_prefix = pobierz_i_zweryfikuj_prefiks()
-        kolumny_wybrane_przez_uzytkownika = wybierz_kolumny_do_wyswietlenia()
+        # Wybierz kolumny do wyświetlenia w terminalu i zdecyduj o kolumnach dla HTML
+        kolumny_dla_terminalu, uzyc_wybranych_w_html = wybierz_kolumny_do_wyswietlenia(
+            wszystkie_kolumny_map=KOLUMNY_TABELI,
+            domyslne_kolumny_dla_menu=DOMYSLNE_KOLUMNY_DO_WYSWIETLENIA)
         # Sprawdź, czy udało się uzyskać prefiks
         if siec_prefix is None:
             print(f"{Fore.RED}Nie udało się ustalić prefiksu sieciowego. Zakończono.{Style.RESET_ALL}")
@@ -3028,7 +3205,7 @@ if __name__ == "__main__":
         # Przekaż listę obiektów DeviceInfo do funkcji wyświetlającej
         wyswietl_tabele_urzadzen(
             lista_urzadzen, # Lista obiektów
-            kolumny_wybrane_przez_uzytkownika # Lista wybranych kolumn
+            kolumny_dla_terminalu # Użyj kolumn wybranych dla terminala
         )
 
         end_arp_time = time.time() # Koniec timera
@@ -3037,12 +3214,18 @@ if __name__ == "__main__":
         print(f"\nCałkowity czas skanowania (ping + ARP + nazwy + porty): {czas_trwania_sekundy:.2f} sekund. Czyli {przelicz_sekundy_na_minuty_sekundy(round(czas_trwania_sekundy))} min:sek")
 
         wyswietl_tekst_w_linii("-",DEFAULT_LINE_WIDTH,"",Fore.LIGHTCYAN_EX,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
+        
+        # Zdecyduj, które kolumny zapisać do HTML
+        kolumny_dla_html_reportu: List[str]
+        if uzyc_wybranych_w_html:
+            kolumny_dla_html_reportu = kolumny_dla_terminalu
+        else:
+            kolumny_dla_html_reportu = DOMYSLNE_KOLUMNY_DO_WYSWIETLENIA # Użyj domyślnego pełnego zestawu
 
         # --- ZAPIS DO PLIKU HTML ---
         sciezka_do_zapisanego_html = zapisz_tabele_urzadzen_do_html(
             lista_urzadzen,
-            DOMYSLNE_KOLUMNY_DO_WYSWIETLENIA, # Przekaż domyślne kolumny do wyświetlenia
-            # kolumny_wybrane_przez_uzytkownika,
+            kolumny_dla_html_reportu, # Przekaż odpowiedni zestaw kolumn
             OPISY_PORTOW, # Przekaż globalny słownik opisów portów
             niestandardowe_porty_serwera_mapa, # Przekaż mapę niestandardowych portów
             siec_prefix=siec_prefix # Przekaż prefiks sieciowy
