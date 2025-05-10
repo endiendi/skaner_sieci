@@ -156,7 +156,7 @@ except ImportError:
 # --- Konfiguracja ---
 
 # --- Konfiguracja Aktualizacji Skryptu ---
-SKRYPT_AKTUALNA_WERSJA = "0.0.3" # Zmień na aktualną wersję Twojego skryptu
+SKRYPT_AKTUALNA_WERSJA = "0.0.4" # Zmień na aktualną wersję Twojego skryptu
 URL_INFORMACJI_O_WERSJI = "https://raw.githubusercontent.com/endiendi/skaner_sieci/main/version_info.json"
 
 # Prefiksy adresów multicast, które chcemy wykluczyć ze skanowania
@@ -755,7 +755,6 @@ def wybierz_kolumny_do_wyswietlenia_menu(
     
     # Stan dla opcji HTML
     uwzglednij_w_html_selected = False # Domyślnie zaznaczone
-
     # Numer opcji HTML będzie następnym numerem po rzeczywistych kolumnach
     numer_opcji_html = len(klucze_do_wyboru_rzeczywiste) + 1
     tekst_opcji_html = "Uwzględnić wybór w raporcie HTML"

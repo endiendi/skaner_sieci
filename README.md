@@ -55,8 +55,7 @@ W ramach nauki programowania — bardziej kopiuj-wklej i research w sieci oraz n
     ```bash
     python skaner_sieci.py
     python skaner_sieci.py -p 192.168.0.
-    python skaner_sieci.py --prefix 192.168.0.
-    192.168.0.      prefix sieci do skanowania
+    python skaner_sieci.py --prefix 192.168.0.      prefix sieci do skanowania
     python skaner_sieci.py -m 17    pominie pierwszą kolumne i uwsględni w raporcie html
     python skaner_sieci.py --menu-choice 17     pominie pierwszą kolumne i uwsględni w raporcie html
      python skaner_sieci.py --menu-choice 1     pominie pierwszą kolumne w raporcie html będą wszystkie kolumny.
