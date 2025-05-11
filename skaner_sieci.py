@@ -560,6 +560,129 @@ def sprawdz_i_zaproponuj_aktualizacje():
         print(f"{Fore.YELLOW}Nie można było sprawdzić dostępności aktualizacji.{Style.RESET_ALL}")
     wyswietl_tekst_w_linii("-", DEFAULT_LINE_WIDTH, "", Fore.LIGHTCYAN_EX, Fore.LIGHTCYAN_EX, dodaj_odstepy=False)
 
+def pobierz_prefixy_zdalne_vpn(nazwa_interfejsu_vpn: str) -> List[str]:
+    """
+    Pobiera listę prefiksów sieciowych (CIDR) routowanych przez podany interfejs VPN.
+    """
+    system = platform.system().lower()
+    prefixes: List[str] = []
+    encoding = DEFAULT_ENCODING
+
+    # print(f"{Fore.CYAN}Analiza tablicy routingu dla interfejsu VPN: {nazwa_interfejsu_vpn}...{Style.RESET_ALL}")
+
+    try:
+        if system == "linux":
+            cmd = ["ip", "-4", "route", "show", "dev", nazwa_interfejsu_vpn]
+            encoding = 'utf-8'
+            process = subprocess.run(cmd, capture_output=True, text=True, encoding=encoding, errors='ignore', check=False) # check=False as it might return non-zero if no routes
+            if process.returncode == 0 and process.stdout:
+                for line in process.stdout.splitlines():
+                    line = line.strip()
+                    parts = line.split()
+                    if not parts:
+                        continue
+                    
+                    potential_prefix = parts[0]
+                    if potential_prefix == "default":
+                        prefixes.append("0.0.0.0/0")
+                    elif '/' in potential_prefix:
+                        try:
+                            ipaddress.ip_network(potential_prefix, strict=False)
+                            prefixes.append(potential_prefix)
+                        except ValueError:
+                            pass
+            elif process.stderr:
+                 print(f"{Fore.YELLOW}Błąd lub brak tras dla interfejsu {nazwa_interfejsu_vpn} (Linux): {process.stderr.strip()}{Style.RESET_ALL}")
+
+        elif system == "windows":
+            vpn_interface_ips: List[str] = []
+            if PSUTIL_AVAILABLE:
+                try:
+                    all_addrs = psutil.net_if_addrs()
+                    if nazwa_interfejsu_vpn in all_addrs:
+                        for snic in all_addrs[nazwa_interfejsu_vpn]:
+                            if snic.family == socket.AF_INET:
+                                vpn_interface_ips.append(snic.address)
+                except Exception as e_psutil:
+                    print(f"{Fore.YELLOW}Nie udało się pobrać IP dla interfejsu {nazwa_interfejsu_vpn} używając psutil: {e_psutil}{Style.RESET_ALL}")
+            
+            if not vpn_interface_ips:
+                print(f"{Fore.YELLOW}Nie można ustalić adresu IP dla interfejsu VPN '{nazwa_interfejsu_vpn}' w systemie Windows. Pomijanie analizy tras.{Style.RESET_ALL}")
+                return []
+
+            cmd = ["route", "print"]
+            encoding = WINDOWS_OEM_ENCODING
+            process = subprocess.run(cmd, capture_output=True, text=True, encoding=encoding, errors='ignore', check=True)
+            
+            active_routes_section = False
+            for line in process.stdout.splitlines():
+                line_lower = line.lower()
+                if "active routes:" in line_lower or "trasy aktywne:" in line_lower:
+                    active_routes_section = True
+                    continue
+                if "persistent routes:" in line_lower or "trasy trwałe:" in line_lower:
+                    active_routes_section = False 
+                    break
+                
+                if active_routes_section and line.strip() and not line.startswith("="):
+                    parts = line.split()
+                    if len(parts) >= 4: 
+                        network_dest = parts[0]
+                        netmask = parts[1]
+                        interface_ip_in_route = parts[3]
+
+                        if interface_ip_in_route in vpn_interface_ips:
+                            try:
+                                network = ipaddress.ip_network(f"{network_dest}/{netmask}", strict=False)
+                                prefixes.append(str(network))
+                            except ValueError:
+                                pass
+        
+        elif system == "darwin": 
+            cmd = ["netstat", "-nr"]
+            encoding = 'utf-8'
+            process = subprocess.run(cmd, capture_output=True, text=True, encoding=encoding, errors='ignore', check=True)
+            routing_table_header_found = False
+            for line in process.stdout.splitlines():
+                line = line.strip()
+                if not routing_table_header_found:
+                    if "Routing tables" in line or ("Destination" in line and "Gateway" in line and "Netif" in line):
+                         routing_table_header_found = True
+                    continue
+                if not line or "Expire" in line : 
+                    continue
+                parts = line.split()
+                if len(parts) >= 4 and parts[-1] == nazwa_interfejsu_vpn: 
+                    destination = parts[0]
+                    if destination == "default":
+                        prefixes.append("0.0.0.0/0")
+                    else:
+                        try:
+                            network = ipaddress.ip_network(destination, strict=False)
+                            prefixes.append(str(network))
+                        except ValueError:
+                            pass
+        else:
+            print(f"{Fore.YELLOW}Pobieranie tras dla VPN nie jest jeszcze zaimplementowane dla systemu: {system}{Style.RESET_ALL}")
+            return []
+
+    except FileNotFoundError:
+        print(f"{Fore.RED}Błąd: Polecenie do wyświetlenia tablicy routingu nie znalezione.{Style.RESET_ALL}")
+        return []
+    except subprocess.CalledProcessError as e:
+        print(f"{Fore.RED}Błąd podczas wykonywania polecenia dla tablicy routingu: {e}{Style.RESET_ALL}")
+        return []
+    except Exception as e:
+        print(f"{Fore.RED}Nieoczekiwany błąd podczas pobierania tras VPN: {e}{Style.RESET_ALL}")
+        return []
+
+    unique_prefixes = sorted(list(set(prefixes)))
+    # if unique_prefixes: # ZAKOMENTOWANE
+        # print(f"{Fore.GREEN}Wykryte prefiksy sieciowe routowane przez {nazwa_interfejsu_vpn}: {', '.join(unique_prefixes)}{Style.RESET_ALL}") # ZAKOMENTOWANE
+    if not unique_prefixes: # Zmieniono warunek, aby wyświetlać tylko jeśli nie znaleziono nic
+        print(f"{Fore.YELLOW}Nie znaleziono specyficznych tras dla interfejsu {nazwa_interfejsu_vpn} lub wystąpił błąd.{Style.RESET_ALL}")
+    
+    return unique_prefixes
 
 def sprawdz_i_utworz_plik(nazwa_pliku: str, przykladowa_tresc: Optional[str] = None) -> None:
     """
@@ -1540,19 +1663,19 @@ def pobierz_brame_domyslna() -> Optional[str]:
         print(f"Nieoczekiwany błąd podczas pobierania bramy domyślnej: {e}")
         return None
 
-def czy_aktywny_vpn_lub_podobny() -> bool:
+def czy_aktywny_vpn_lub_podobny() -> Optional[str]: # Zmieniono typ zwracany na Optional[str]
     """
-    Sprawdza, czy istnieje interfejs VPN, który jest UP.
+    Sprawdza, czy istnieje interfejs VPN, który jest UP i zwraca jego nazwę.
     Priorytetyzuje:
-    1. Interfejsy UP z adresem IP w zakresie CGNAT (100.64.0.0/10) - traktowane jako AKTYWNE.
-    2. Interfejsy UP z nazwami 'tun', 'tap', 'wg', 'open' ORAZ posiadające adres IPv4 inny niż loopback/link-local - traktowane jako AKTYWNE.
-    3. Interfejsy UP z nazwą 'tailscale' ORAZ posiadające adres IPv4 inny niż loopback/link-local - traktowane jako AKTYWNE.
-    4. Interfejsy UP z nazwami 'tun', 'tap', 'wg', 'open' (bez "ważnego" IP) - traktowane jako POTENCJALNE/NIEPOŁĄCZONE.
-    5. Interfejsy UP z nazwą 'tailscale' (bez "ważnego" IP) - traktowane jako POTENCJALNE/NIEPOŁĄCZONE.
+    1. Interfejsy UP z adresem IP w zakresie CGNAT (100.64.0.0/10).
+    2. Interfejsy UP z nazwami 'tun', 'tap', 'wg', 'open' ORAZ posiadające adres IPv4.
+    3. Interfejsy UP z nazwą 'tailscale' ORAZ posiadające adres IPv4.
+    Zwraca nazwę interfejsu jeśli znaleziono AKTYWNY VPN, lub nazwę z dopiskiem (potencjalny)
+    jeśli interfejs pasuje z nazwy ale nie ma "ważnego" IP. Zwraca None jeśli nic nie znaleziono.
     Wymaga biblioteki psutil.
     """
     if not PSUTIL_AVAILABLE:
-        return False
+        return None # Zmieniono z False na None
 
     tailscale_network = ipaddress.ip_network('100.64.0.0/10')
     primary_vpn_prefixes: List[str] = ['tun', 'tap', 'wg', 'open']
@@ -1562,6 +1685,7 @@ def czy_aktywny_vpn_lub_podobny() -> bool:
         interfaces_addrs = psutil.net_if_addrs()
         interfaces_stats = psutil.net_if_stats()
 
+        # Kandydaci, posortowani wg priorytetu
         found_by_ip: Optional[str] = None
         found_by_primary_name_with_ip: Optional[str] = None
         found_by_tailscale_name_with_ip: Optional[str] = None
@@ -1571,39 +1695,38 @@ def czy_aktywny_vpn_lub_podobny() -> bool:
         for if_name, stats in interfaces_stats.items():
             if stats.isup:
                 if_name_lower = if_name.lower()
-                has_valid_ipv4 = False
+                has_valid_ipv4 = False # Czy interfejs ma jakikolwiek "sensowny" adres IPv4
 
                 if if_name in interfaces_addrs:
                     snic_list = interfaces_addrs[if_name]
                     for snic in snic_list:
                         if snic.family == socket.AF_INET:
                             try:
-                                ip_addr = ipaddress.ip_address(snic.address)
-                                if ip_addr in tailscale_network:
-                                    found_by_ip = if_name
+                                ip_addr_obj = ipaddress.ip_address(snic.address)
+                                # 1. Priorytet: Adres IP w zakresie CGNAT (często używane przez VPNy jak Tailscale)
+                                if ip_addr_obj in tailscale_network: # Poprawiono 'ip_addr' na 'ip_addr_obj'
+                                    found_by_ip = if_name # Najwyższy priorytet
                                     has_valid_ipv4 = True
-                                    break
-                                if not ip_addr.is_loopback and not ip_addr.is_link_local:
+                                    break # Mamy kandydata z tego interfejsu
+                                # Sprawdź, czy to nie loopback/link-local, aby uznać za "ważny" IP
+                                if not ip_addr_obj.is_loopback and not ip_addr_obj.is_link_local:
                                     has_valid_ipv4 = True
                             except ValueError:
-                                continue
-                    if found_by_ip: continue
+                                continue # Niepoprawny adres IP, ignoruj
+                    if found_by_ip: continue # Jeśli znaleziono przez IP, przejdź do następnego interfejsu
 
-                name_matches_primary = False
-                for prefix in primary_vpn_prefixes:
-                    if if_name_lower.startswith(prefix):
-                        name_matches_primary = True
-                        if has_valid_ipv4:
-                            if not found_by_primary_name_with_ip:
-                                found_by_primary_name_with_ip = if_name
-                        else:
-                            if not found_by_primary_name_only:
-                                found_by_primary_name_only = if_name
-                        break
+                # 2. Priorytet: Nazwy typowe dla VPN (tun, tap, wg, open) Z adresem IP
+                name_matches_primary = any(if_name_lower.startswith(p) for p in primary_vpn_prefixes)
+                if name_matches_primary:
+                    if has_valid_ipv4:
+                        if not found_by_primary_name_with_ip: found_by_primary_name_with_ip = if_name
+                    else: # Bez "ważnego" IP
+                        if not found_by_primary_name_only: found_by_primary_name_only = if_name
+                    # Jeśli to nie Tailscale, a pasuje do primary, to już go obsłużyliśmy
+                    if not if_name_lower.startswith(tailscale_prefix):
+                        continue
 
-                if name_matches_primary and not if_name_lower.startswith(tailscale_prefix):
-                     continue
-
+                # 3. Priorytet: Nazwa 'tailscale' Z adresem IP
                 if if_name_lower.startswith(tailscale_prefix):
                     if has_valid_ipv4:
                          if not found_by_tailscale_name_with_ip:
@@ -1611,37 +1734,30 @@ def czy_aktywny_vpn_lub_podobny() -> bool:
                     else:
                          if not found_by_tailscale_name_only:
                              found_by_tailscale_name_only = if_name
-
-        # --- Krok 2: Decyzja na podstawie zebranych kandydatów i priorytetów ---
+        # Decyzja na podstawie zebranych kandydatów i priorytetów
         if found_by_ip:
-            wyswietl_tekst_w_linii(" ",DEFAULT_LINE_WIDTH,f"Info: Wykryto AKTYWNY interfejs VPN (CGNAT) wg adresu IP: {found_by_ip}",Fore.CYAN,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
-            # print(f"\n{Fore.CYAN}Info: Wykryto AKTYWNY interfejs VPN (CGNAT) wg adresu IP: {found_by_ip}{Style.RESET_ALL}")
-            return True
+            # wyswietl_tekst_w_linii(" ",DEFAULT_LINE_WIDTH,f"Info: Wykryto AKTYWNY interfejs VPN (CGNAT) wg adresu IP: {found_by_ip}",Fore.CYAN,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
+            return found_by_ip
         elif found_by_primary_name_with_ip:
-            wyswietl_tekst_w_linii(" ",DEFAULT_LINE_WIDTH,f"Info: Wykryto AKTYWNY interfejs VPN wg nazwy (główny z IP): {found_by_primary_name_with_ip}",Fore.CYAN,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
-            # print(f"\n{Fore.CYAN}Info: Wykryto AKTYWNY interfejs VPN wg nazwy (główny z IP): {found_by_primary_name_with_ip}{Style.RESET_ALL}")
-            return True
+            # wyswietl_tekst_w_linii(" ",DEFAULT_LINE_WIDTH,f"Info: Wykryto AKTYWNY interfejs VPN wg nazwy (główny z IP): {found_by_primary_name_with_ip}",Fore.CYAN,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
+            return found_by_primary_name_with_ip
         elif found_by_tailscale_name_with_ip:
-             wyswietl_tekst_w_linii(" ",DEFAULT_LINE_WIDTH,f"Info: Wykryto AKTYWNY interfejs VPN wg nazwy (Tailscale z IP): {found_by_tailscale_name_with_ip}",Fore.CYAN,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
-            #  print(f"\n{Fore.CYAN}Info: Wykryto AKTYWNY interfejs VPN wg nazwy (Tailscale z IP): {found_by_tailscale_name_with_ip}{Style.RESET_ALL}")
-             return True
-        # --- ZMIANA KOMUNIKATÓW TUTAJ ---
+            # wyswietl_tekst_w_linii(" ",DEFAULT_LINE_WIDTH,f"Info: Wykryto AKTYWNY interfejs VPN wg nazwy (Tailscale z IP): {found_by_tailscale_name_with_ip}",Fore.CYAN,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
+            return found_by_tailscale_name_with_ip
         elif found_by_primary_name_only:
-            # Zmieniono "AKTYWNY" na "potencjalny" i dodano "(może nie być połączony)"
-            wyswietl_tekst_w_linii(" ",DEFAULT_LINE_WIDTH,f"Info: Wykryto potencjalny interfejs VPN wg nazwy (główny, może nie być połączony): {found_by_primary_name_only}",Fore.CYAN,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
-            # print(f"\n{Fore.CYAN}Info: Wykryto potencjalny interfejs VPN wg nazwy (główny, może nie być połączony): {found_by_primary_name_only}{Style.RESET_ALL}")
-            return False # Zwracama False
+            # wyswietl_tekst_w_linii(" ",DEFAULT_LINE_WIDTH,f"Info: Wykryto potencjalny interfejs VPN wg nazwy (główny, może nie być połączony): {found_by_primary_name_only}",Fore.CYAN,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
+            return f"{found_by_primary_name_only} (potencjalny)" # Zwróć nazwę z adnotacją
         elif found_by_tailscale_name_only:
-            # Zmieniono "AKTYWNY" na "potencjalny" i dodano "(może nie być połączony)"
-            wyswietl_tekst_w_linii(" ",DEFAULT_LINE_WIDTH,f"Info: Wykryto potencjalny interfejs VPN (może nie być połączony)",Fore.CYAN,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
-            # print(f"\n{Fore.CYAN}Info: Wykryto potencjalny interfejs VPN (może nie być połączony){Style.RESET_ALL}")
-            return False # Zwracama False
+            # wyswietl_tekst_w_linii(" ",DEFAULT_LINE_WIDTH,f"Info: Wykryto potencjalny interfejs VPN (Tailscale, może nie być połączony): {found_by_tailscale_name_only}",Fore.CYAN,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
+            return f"{found_by_tailscale_name_only} (potencjalny)" # Zwróć nazwę z adnotacją
         else:
-            return False
+            return None
 
     except Exception as e:
         print(f"{Fore.YELLOW}Ostrzeżenie: Wystąpił błąd podczas sprawdzania interfejsów sieciowych dla VPN: {e}{Style.RESET_ALL}")
-        return False
+        return None
+
+
 
 def _ping_single_ip(ip: str, system: str) -> Optional[str]:
     """
@@ -3284,24 +3400,44 @@ if __name__ == "__main__":
 
         sprawdz_i_zaproponuj_aktualizacje()
         # --- Koniec sprawdzania aktualizacji ---
-        wyswietl_tekst_w_linii("-",DEFAULT_LINE_WIDTH,"Skaner Sieci Lokalnej",Fore.YELLOW,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
+        wyswietl_tekst_w_linii("-",DEFAULT_LINE_WIDTH,"Skaner sieci Lokalnej z maską /24",Fore.YELLOW,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
         wszystkie_ip, glowny_ip = pobierz_wszystkie_aktywne_ip()
-        # Sprawdź obecność VPN lub inne i wyświetl ostrzeżenie tylko jeśli psutil jest dostępny
-        if PSUTIL_AVAILABLE:
-            # Użyj nowej nazwy funkcji
-            if czy_aktywny_vpn_lub_podobny():
-                wyswietl_tekst_w_linii("-",DEFAULT_LINE_WIDTH,"OSTRZEŻENIE: Wykryto aktywny interfejs VPN lub podobny (np. Tailscale).",Fore.LIGHTYELLOW_EX,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
+        
+        nazwa_aktywnego_vpn: Optional[str] = None
+
+        wynik_vpn_check = czy_aktywny_vpn_lub_podobny() 
+        if wynik_vpn_check:
+            if "(potencjalny)" in wynik_vpn_check:
+                interface_name_potencjalny = wynik_vpn_check.replace(' (potencjalny)','')
+                wyswietl_tekst_w_linii(" ",DEFAULT_LINE_WIDTH,f"Info: Wykryto potencjalny interfejs VPN: {interface_name_potencjalny}, ale może nie być aktywny/połączony.",Fore.CYAN,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
+            else:
+                nazwa_aktywnego_vpn = wynik_vpn_check 
+                wyswietl_tekst_w_linii("-",DEFAULT_LINE_WIDTH,f"OSTRZEŻENIE: Wykryto aktywny interfejs VPN: {nazwa_aktywnego_vpn}.",Fore.LIGHTYELLOW_EX,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
                 wyswietl_tekst_w_linii(" ",DEFAULT_LINE_WIDTH,"Może to zakłócać rozpoznawanie nazw hostów w Twojej sieci lokalnej (LAN).",Fore.YELLOW,Fore.LIGHTCYAN_EX,dodaj_odstepy=False)
                 wyswietl_tekst_w_linii(" ",DEFAULT_LINE_WIDTH,"Jeśli nazwy hostów lokalnych nie są wyświetlane poprawnie (pokazuje 'Nieznana'), spróbuj:",Fore.YELLOW,Fore.LIGHTCYAN_EX,dodaj_odstepy=False)
                 wyswietl_tekst_w_linii(" ",DEFAULT_LINE_WIDTH,"1. Skonfigurować VPN, aby używał lokalnych serwerów DNS (jeśli to możliwe, np. Split DNS).",Fore.YELLOW,Fore.LIGHTCYAN_EX,dodaj_odstepy=False)
                 wyswietl_tekst_w_linii(" ",DEFAULT_LINE_WIDTH,"2. Tymczasowo wyłączyć VPN na czas działania skryptu.",Fore.YELLOW,Fore.LIGHTCYAN_EX,dodaj_odstepy=False)
-                wyswietl_tekst_w_linii("-",DEFAULT_LINE_WIDTH,"",Fore.YELLOW,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
+                    
+                prefixy_zdalne_wszystkie = pobierz_prefixy_zdalne_vpn(nazwa_aktywnego_vpn)
+                 # Filtruj, aby pokazać tylko całe podsieci (nie pojedyncze hosty /32)
+                prefixy_zdalne_podsieci = [p for p in prefixy_zdalne_wszystkie if not p.endswith('/32')]
+
+                if prefixy_zdalne_podsieci:
+                    wyswietl_tekst_w_linii(" ", DEFAULT_LINE_WIDTH, f"Zdalne podsieci dostępne przez VPN ({nazwa_aktywnego_vpn}): {', '.join(prefixy_zdalne_podsieci)}", Fore.CYAN, Fore.LIGHTCYAN_EX, dodaj_odstepy=False)
+                elif prefixy_zdalne_wszystkie: # Jeśli były jakieś /32, ale nie ma /24 itp.
+                    wyswietl_tekst_w_linii(" ", DEFAULT_LINE_WIDTH, f"Przez VPN ({nazwa_aktywnego_vpn}) dostępne są tylko pojedyncze hosty (nie całe podsieci).", Fore.CYAN, Fore.LIGHTCYAN_EX, dodaj_odstepy=False)
+                else:
+                    wyswietl_tekst_w_linii(" ", DEFAULT_LINE_WIDTH, f"Nie udało się ustalić konkretnych sieci zdalnych dla VPN ({nazwa_aktywnego_vpn}).", Fore.YELLOW, Fore.LIGHTCYAN_EX, dodaj_odstepy=False)
+                wyswietl_tekst_w_linii("-",DEFAULT_LINE_WIDTH,"",Fore.YELLOW,Fore.LIGHTCYAN_EX,dodaj_odstepy=True) 
+
 
         # ... (kod sprawdzający VPN i wyświetlający IP/MAC hosta) ...
         host_ip = glowny_ip #pobierz_ip_interfejsu()
         host_mac = pobierz_mac_adres(host_ip) #if host_ip else "Nieznany"
         gateway_ip = pobierz_brame_domyslna()
 
+        print(f"Adres IP komputera: {host_ip if host_ip else 'Nieznany'}")
+        print(f"Adres MAC komputera: {host_mac if host_mac else 'Nieznany'}") 
 
         # Pobierz i zweryfikuj prefiks sieciowy używając nowej funkcji
         siec_prefix = pobierz_i_zweryfikuj_prefiks(cmd_prefix=cmd_prefix_to_use)
@@ -3310,10 +3446,7 @@ if __name__ == "__main__":
             wszystkie_kolumny_map=KOLUMNY_TABELI,
             domyslne_kolumny_dla_menu=DOMYSLNE_KOLUMNY_DO_WYSWIETLENIA,
             cmd_menu_choice=cmd_menu_choice_to_use) # Przekaż przetworzony wybór z linii poleceń
-        
-        print(f"Adres IP komputera: {host_ip if host_ip else 'Nieznany'}")
-        print(f"Adres MAC komputera: {host_mac if host_mac else 'Nieznany'}")        
-        
+
         # Sprawdź, czy udało się uzyskać prefiks
         if siec_prefix is None:
             print(f"{Fore.RED}Nie udało się ustalić prefiksu sieciowego. Zakończono.{Style.RESET_ALL}")
