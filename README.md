@@ -74,7 +74,7 @@ W ramach nauki programowania — bardziej kopiuj-wklej i research w sieci oraz n
     python skaner_sieci.py --prefix 192.168.0. --menu-choice 17
 
     -m 123456 kolumny które mają się nie wyświetlań 7 uwzględnić w raporcie html
-    
+
     -m 7 lub 0 wyświetli wszystkie kolumny.
      
 4.  Skrypt spróbuje wykryć prefiks sieciowy. Zostaniesz zapytany, czy jest on poprawny. Możesz nacisnąć Enter, aby go zaakceptować, podać inny prefiks (np. `10.0.0.`) lub przerwać działanie (Ctrl+C).
@@ -137,3 +137,9 @@ Unchanged lines
 ## Licencja
 
 Brak
+
+## Zięcia 
+
+![Przykład działania skanera](img/skaner_sieci01.png)
+
+![Przykład działania skanera](img/skaner_sieci02.png)
