@@ -54,17 +54,22 @@ W ramach nauki programowania — bardziej kopiuj-wklej i research w sieci oraz n
 3.  Uruchom skrypt za pomocą Pythona:
     ```bash
     python skaner_sieci.py
+    ```
+    ```bash
     python skaner_sieci.py -p 192.168.0.
+    ```
+    ```bash
+    python skaner_sieci.py -p 192.168.0. -m 17
+    ```
+    
     python skaner_sieci.py --prefix 192.168.0.      prefix sieci do skanowania
     python skaner_sieci.py -m 17    pominie pierwszą kolumne i uwsględni w raporcie html
     python skaner_sieci.py --menu-choice 17     pominie pierwszą kolumne i uwsględni w raporcie html
-     python skaner_sieci.py --menu-choice 1     pominie pierwszą kolumne w raporcie html będą wszystkie kolumny.
-    python skaner_sieci.py -p 192.168.0. -m 17
+    python skaner_sieci.py --menu-choice 1     pominie pierwszą kolumne w raporcie html będą wszystkie kolumny.
     python skaner_sieci.py --prefix 192.168.0. --menu-choice 17
     -m 123456 kolumny które mają się nie wyświetlań 7 uwzględnić w raporcie html
-    -m 7 wyświetli wszystkie kolumny
- 
-    ```
+    -m 7 lub 0 wyświetli wszystkie kolumny
+     
 4.  Skrypt spróbuje wykryć prefiks sieciowy. Zostaniesz zapytany, czy jest on poprawny. Możesz nacisnąć Enter, aby go zaakceptować, podać inny prefiks (np. `10.0.0.`) lub przerwać działanie (Ctrl+C).
 5.  Skrypt rozpocznie pingowanie zakresu adresów, a następnie wyświetli tabelę znalezionych urządzeń.
 
