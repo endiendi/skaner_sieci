@@ -1,0 +1,16 @@
+# Przykładowy plik z niestandardowymi portami dla serwerów HTTP/HTTPS
+# Linie zaczynające się od '#' są ignorowane.
+[https]
+443
+8001
+8443
+32400
+[http]
+80
+8000
+8123
+13378
+8096
+8989
+8080
+4357
