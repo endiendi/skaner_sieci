@@ -2363,6 +2363,34 @@ def pobierz_baze_z_tekstu(baza_oui_txt: str) -> Dict[str, str]:
         print("Ostrzeżenie: Nie udało się sparsować żadnych wpisów OUI z pobranego tekstu.")
     return baza_oui
 
+def is_valid_prefix_format(prefix_str: str) -> bool:
+    """Sprawdza, czy ciąg jest poprawnym prefiksem sieciowym (np. 192.168.0.)."""
+    if re.match(r"^(\d{1,3}\.){3}$", prefix_str):
+        parts = prefix_str.split('.')[:-1] # Pobierz trzy oktety
+        try:
+            return all(0 <= int(p) <= 255 for p in parts)
+        except ValueError:
+            return False
+    return False
+
+def is_full_ip_address(ip_str: str) -> bool:
+    """Sprawdza, czy ciąg jest pełnym, poprawnym adresem IPv4."""
+    try:
+        ipaddress.ip_address(ip_str) # Podstawowa walidacja przez ipaddress
+        # Pełny adres IP powinien mieć 3 kropki i nie kończyć się kropką
+        return ip_str.count('.') == 3 and not ip_str.endswith('.')
+    except ValueError:
+        return False
+
+def get_prefix_from_ip(ip_str: str) -> Optional[str]:
+    """Wyodrębnia prefiks sieciowy (np. 192.168.0.) z pełnego adresu IP."""
+    try:
+        if is_full_ip_address(ip_str): # Upewnij się, że to pełny IP
+            return ".".join(ip_str.split('.')[:3]) + "."
+    except ValueError: # ip_str.split może zawieść jeśli ip_str nie jest stringiem
+        pass
+    return None
+
 def pobierz_i_zweryfikuj_prefiks(cmd_prefix: Optional[str] = None) -> Optional[str]:
     """
     Pobiera prefiks sieciowy. Jeśli zostanie wykryty automatycznie,
@@ -2376,163 +2404,167 @@ def pobierz_i_zweryfikuj_prefiks(cmd_prefix: Optional[str] = None) -> Optional[s
 
     potwierdzony_prefiks: Optional[str] = None
 
+    # --- 1. Obsługa prefiksu z linii poleceń ---
     if cmd_prefix:
-        # print(f"{Fore.CYAN}Próba użycia prefiksu sieciowego z linii poleceń: -p {cmd_prefix}{Style.RESET_ALL}")
-        prefiks_do_walidacji = cmd_prefix.strip()
-        if not prefiks_do_walidacji.endswith("."):
-            prefiks_do_walidacji += "."
+        cmd_prefix_stripped = cmd_prefix.strip()
+
+        # Scenariusz 1.1: cmd_prefix to pełny adres IP (np. 192.168.0.142)
+        if is_full_ip_address(cmd_prefix_stripped):
+            extracted_prefix = get_prefix_from_ip(cmd_prefix_stripped)
+            if extracted_prefix:
+                print(f"{Fore.CYAN}Podano pełny adres IP '{cmd_prefix_stripped}' jako argument -p.{Style.RESET_ALL}")
+                try:
+                    prompt_text = f"Czy chcesz skanować sieć z prefiksem '{extracted_prefix}'? ({Fore.LIGHTMAGENTA_EX}T/n{Style.RESET_ALL}): "
+                    odp = input(prompt_text).lower().strip()
+                    sys.stdout.write("\033[A\033[K") # Wyczyść linię inputu
+                    sys.stdout.flush()
+                    if not odp or odp.startswith('t') or odp.startswith('y'):
+                        potwierdzony_prefiks = extracted_prefix
+                        print(f"{Fore.GREEN}Używany prefiks sieciowy: {potwierdzony_prefiks}{Style.RESET_ALL}")
+                        return potwierdzony_prefiks
+                    else:
+                        print(f"{Fore.YELLOW}Skanowanie z prefiksem '{extracted_prefix}' odrzucone. Przechodzenie do trybu interaktywnego.{Style.RESET_ALL}")
+                        cmd_prefix = None # Wymuś tryb interaktywny
+                except (EOFError, KeyboardInterrupt):
+                    obsluz_przerwanie_uzytkownika() # Obsługuje wyjście
+            else: # Nie powinno się zdarzyć, jeśli is_full_ip_address było prawdziwe
+                print(f"{Fore.YELLOW}Ostrzeżenie: Nie udało się wyekstrahować prefiksu z '{cmd_prefix_stripped}'. Przechodzenie do trybu interaktywnego.{Style.RESET_ALL}")
+                cmd_prefix = None
         
-        if re.match(r"^(\d{1,3}\.){3}$", prefiks_do_walidacji):
-            parts = prefiks_do_walidacji.split('.')[:-1]
-            try:
-                if all(0 <= int(p) <= 255 for p in parts):
-                    potwierdzony_prefiks = prefiks_do_walidacji
-                    print(f"{Fore.GREEN}Używany prefiks sieciowy z linii poleceń: {potwierdzony_prefiks}{Style.RESET_ALL}")
-                    return potwierdzony_prefiks
-                else:
-                    print(f"{Fore.YELLOW}Ostrzeżenie: Prefiks z linii poleceń '{cmd_prefix}' ma nieprawidłowe oktety. Przechodzenie do trybu interaktywnego.{Style.RESET_ALL}")
-            except ValueError:
-                print(f"{Fore.YELLOW}Ostrzeżenie: Prefiks z linii poleceń '{cmd_prefix}' zawiera nie-liczbowe części. Przechodzenie do trybu interaktywnego.{Style.RESET_ALL}")
-        else:
-            print(f"{Fore.YELLOW}Ostrzeżenie: Prefiks z linii poleceń '{cmd_prefix}' ma niepoprawny format. Przechodzenie do trybu interaktywnego.{Style.RESET_ALL}")
-        # Jeśli walidacja prefiksu z linii poleceń nie powiodła się, potwierdzony_prefiks pozostaje None,
-        # a skrypt przejdzie do części interaktywnej poniżej.
+        # Scenariusz 1.2: cmd_prefix to już prefiks (np. 192.168.0.) lub jest nieprawidłowy
+        elif cmd_prefix: # Sprawdź ponownie, bo mogło zostać ustawione na None powyżej
+            prefiks_do_walidacji_cmd = cmd_prefix_stripped
+            if not prefiks_do_walidacji_cmd.endswith("."):
+                prefiks_do_walidacji_cmd += "."
+            
+            if is_valid_prefix_format(prefiks_do_walidacji_cmd):
+                potwierdzony_prefiks = prefiks_do_walidacji_cmd
+                print(f"{Fore.GREEN}Używany prefiks sieciowy z linii poleceń: {potwierdzony_prefiks}{Style.RESET_ALL}")
+                return potwierdzony_prefiks
+            else:
+                print(f"{Fore.YELLOW}Ostrzeżenie: Prefiks z linii poleceń '{cmd_prefix}' ma niepoprawny format. Przechodzenie do trybu interaktywnego.{Style.RESET_ALL}")
+                cmd_prefix = None # Upewnij się, że przechodzimy do trybu interaktywnego, jeśli cmd_prefix był nieprawidłowy
+
+    # --- 2. Automatyczne wykrywanie i/lub tryb interaktywny ---
+    # Ta część uruchamia się, jeśli cmd_prefix nie został podany, był nieprawidłowy,
+    # lub użytkownik odrzucił wyekstrahowany prefiks z pełnego IP podanego w cmd_prefix
 
     siec_prefix_automatyczny = pobierz_prefiks_sieciowy()
 
     if siec_prefix_automatyczny:
-        # Automatyczne wykrywanie powiodło się - zapytaj użytkownika
-        print(f"Wykryty prefiks sieciowy: '{siec_prefix_automatyczny}'.")
-        while potwierdzony_prefiks is None: # Pytaj dopóki nie uzyskasz poprawnego prefiksu
+        print(f"Wykryty automatycznie prefiks sieciowy: '{siec_prefix_automatyczny}'.")
+        while potwierdzony_prefiks is None:
             try:
-                prompt_text = f"Potwierdź {Fore.LIGHTMAGENTA_EX}[Enter]{Style.RESET_ALL}, podaj inny prefiks lub {Fore.LIGHTMAGENTA_EX}Ctrl+C{Style.RESET_ALL} aby zakończyć: "
-                odpowiedz = input(prompt_text)
-
-                if not odpowiedz.strip(): # Użytkownik nacisnął Enter
-                    potwierdzony_prefiks = siec_prefix_automatyczny
-                    # --- CZYSZCZENIE LINII PROMPTU ---
-                    sys.stdout.write("\033[A\033[K") # Przesuń kursor w górę, wyczyść linię
-                    sys.stdout.flush()
-                    # --- KONIEC CZYSZCZENIA ---
-                    print(f"Używany prefiks sieciowy: {potwierdzony_prefiks}")
-                else: # Użytkownik podał inny prefiks
-                    nowy_prefiks = odpowiedz.strip()
-                    if not nowy_prefiks.endswith("."):
-                        nowy_prefiks += "."
-                    # Prosta walidacja formatu XXX.YYY.ZZZ.
-                    if re.match(r"^(\d{1,3}\.){3}$", nowy_prefiks):
-                         parts = nowy_prefiks.split('.')[:-1]
-                         try:
-                             if all(0 <= int(p) <= 255 for p in parts):
-                                 potwierdzony_prefiks = nowy_prefiks
-                                 # --- CZYSZCZENIE LINII PROMPTU ---
-                                 sys.stdout.write("\033[A\033[K") # Przesuń kursor w górę, wyczyść linię
-                                 sys.stdout.flush()
-                                 # --- KONIEC CZYSZCZENIA ---
-                                 print(f"Używany prefiks sieciowy: {potwierdzony_prefiks}")
-                             else:
-                                 # --- CZYSZCZENIE LINII PROMPTU PRZED BŁĘDEM ---
-                                 sys.stdout.write("\033[A\033[K")
-                                 sys.stdout.flush()
-                                 # --- KONIEC CZYSZCZENIA ---
-                                 print(f"{Fore.YELLOW}Ostrzeżenie: Jeden z oktetów w podanym prefiksie jest poza zakresem 0-255. Spróbuj ponownie.{Style.RESET_ALL}")
-                                 # Pętla while będzie kontynuowana
-                         except ValueError:
-                              # --- CZYSZCZENIE LINII PROMPTU PRZED BŁĘDEM ---
-                              sys.stdout.write("\033[A\033[K")
-                              sys.stdout.flush()
-                              # --- KONIEC CZYSZCZENIA ---
-                              print(f"{Fore.YELLOW}Ostrzeżenie: Podany prefiks zawiera nie-liczbowe części. Spróbuj ponownie.{Style.RESET_ALL}")
-                              # Pętla while będzie kontynuowana
-                    else:
-                        # --- CZYSZCZENIE LINII PROMPTU PRZED BŁĘDEM ---
-                        sys.stdout.write("\033[A\033[K")
-                        sys.stdout.flush()
-                        # --- KONIEC CZYSZCZENIA ---
-                        print(f"{Fore.YELLOW}Niepoprawny format podanego prefiksu (oczekiwano np. 192.168.1.). Spróbuj ponownie.{Style.RESET_ALL}")
-                        # Pętla while będzie kontynuowana
-
-            except EOFError:
-                # Wyczyść linię promptu jeśli wystąpił EOF
-                sys.stdout.write("\r\033[K")
+                prompt_text = f"Potwierdź {Fore.LIGHTMAGENTA_EX}[Enter]{Style.RESET_ALL}, podaj inny prefiks/IP lub {Fore.LIGHTMAGENTA_EX}Ctrl+C{Style.RESET_ALL} aby zakończyć: "
+                odpowiedz_uzytkownika = input(prompt_text).strip()
+                
+                sys.stdout.write("\033[A\033[K") # Natychmiast wyczyść linię inputu
                 sys.stdout.flush()
-                print("\nNie można pobrać odpowiedzi (EOF). Używam automatycznie wykrytego prefiksu.")
-                potwierdzony_prefiks = siec_prefix_automatyczny # Akceptuj automatyczny w razie EOF
-                break # Wyjdź z pętli while
-            except KeyboardInterrupt:
-                obsluz_przerwanie_uzytkownika() # Ta funkcja obsługuje wyjście
+
+                if not odpowiedz_uzytkownika: # Użytkownik nacisnął Enter
+                    potwierdzony_prefiks = siec_prefix_automatyczny
+                    print(f"{Fore.GREEN}Używany prefiks sieciowy: {potwierdzony_prefiks}{Style.RESET_ALL}")
+                    break
+                
+                # Sprawdź, czy użytkownik podał pełny adres IP
+                if is_full_ip_address(odpowiedz_uzytkownika):
+                    extracted_prefix = get_prefix_from_ip(odpowiedz_uzytkownika)
+                    if extracted_prefix:
+                        print(f"{Fore.CYAN}Podano pełny adres IP '{odpowiedz_uzytkownika}'.{Style.RESET_ALL}")
+                        try:
+                            prompt_confirm_ip = f"Czy chcesz skanować sieć z prefiksem '{extracted_prefix}'? ({Fore.LIGHTMAGENTA_EX}T/n{Style.RESET_ALL}): "
+                            odp_confirm = input(prompt_confirm_ip).lower().strip()
+                            sys.stdout.write("\033[A\033[K") # Wyczyść linię potwierdzenia
+                            sys.stdout.flush()
+                            if not odp_confirm or odp_confirm.startswith('t') or odp_confirm.startswith('y'):
+                                potwierdzony_prefiks = extracted_prefix
+                                print(f"Używany prefiks sieciowy: {potwierdzony_prefiks}")
+                                break
+                            else:
+                                print(f"{Fore.YELLOW}Skanowanie z prefiksem '{extracted_prefix}' odrzucone. Spróbuj ponownie podać prefiks lub IP.{Style.RESET_ALL}")
+                                continue # Wróć do promptu
+                        except (EOFError, KeyboardInterrupt):
+                            obsluz_przerwanie_uzytkownika()
+                    else:
+                        print(f"{Fore.YELLOW}Nie udało się wyekstrahować prefiksu z '{odpowiedz_uzytkownika}'. Spróbuj ponownie.{Style.RESET_ALL}")
+                        continue
+                else: # Użytkownik podał coś innego, spróbuj zwalidować jako prefiks
+                    nowy_prefiks_test = odpowiedz_uzytkownika
+                    if not nowy_prefiks_test.endswith("."):
+                        nowy_prefiks_test += "."
+                    
+                    if is_valid_prefix_format(nowy_prefiks_test):
+                        potwierdzony_prefiks = nowy_prefiks_test
+                        print(f"Używany prefiks sieciowy: {potwierdzony_prefiks}")
+                        break
+                    else:
+                        print(f"{Fore.YELLOW}Niepoprawny format podanego prefiksu/IP (oczekiwano np. 192.168.1. lub 192.168.1.100). Spróbuj ponownie.{Style.RESET_ALL}")
+                        continue
+            except (EOFError, KeyboardInterrupt):
+                obsluz_przerwanie_uzytkownika()
             except Exception as e:
-                 # Wyczyść linię promptu
-                 sys.stdout.write("\r\033[K")
-                 sys.stdout.flush()
                  print(f"\n{Fore.RED}Błąd podczas pobierania odpowiedzi: {e}{Style.RESET_ALL}")
                  print(f"Używam automatycznie wykrytego prefiksu: {siec_prefix_automatyczny}")
-                 potwierdzony_prefiks = siec_prefix_automatyczny # Akceptuj automatyczny w razie błędu
-                 break # Wyjdź z pętli while
+                 potwierdzony_prefiks = siec_prefix_automatyczny
+                 break
 
-    else:
-        # Automatyczne wykrywanie nie powiodło się - przejdź do ręcznego wprowadzania
+    else: # Automatyczne wykrywanie nie powiodło się
         print(f"{Fore.YELLOW}Nie udało się automatycznie wykryć prefiksu sieciowego.{Style.RESET_ALL}")
         while potwierdzony_prefiks is None:
             try:
-                prompt_text = f"Podaj prefiks sieciowy (np. 192.168.1.) lub {Fore.LIGHTMAGENTA_EX}Ctrl+C{Style.RESET_ALL} aby zakończyć: "
-                odpowiedz = input(prompt_text)
-
-                if not odpowiedz.strip():
-                    # --- CZYSZCZENIE LINII PROMPTU PRZED BŁĘDEM ---
-                    sys.stdout.write("\033[A\033[K")
-                    sys.stdout.flush()
-                    # --- KONIEC CZYSZCZENIA ---
-                    print(f"{Fore.YELLOW}Prefiks nie może być pusty. Spróbuj ponownie.{Style.RESET_ALL}")
-                    continue # Wróć do początku pętli while
-
-                nowy_prefiks = odpowiedz.strip()
-                if not nowy_prefiks.endswith("."):
-                    nowy_prefiks += "."
-
-                if re.match(r"^(\d{1,3}\.){3}$", nowy_prefiks):
-                    parts = nowy_prefiks.split('.')[:-1]
-                    try:
-                        if all(0 <= int(p) <= 255 for p in parts):
-                            potwierdzony_prefiks = nowy_prefiks
-                            # --- CZYSZCZENIE LINII PROMPTU ---
-                            sys.stdout.write("\033[A\033[K") # Przesuń kursor w górę, wyczyść linię
-                            sys.stdout.flush()
-                            # --- KONIEC CZYSZCZENIA ---
-                            print(f"Używany prefiks sieciowy: {potwierdzony_prefiks}")
-                        else:
-                            # --- CZYSZCZENIE LINII PROMPTU PRZED BŁĘDEM ---
-                            sys.stdout.write("\033[A\033[K")
-                            sys.stdout.flush()
-                            # --- KONIEC CZYSZCZENIA ---
-                            print(f"{Fore.YELLOW}Ostrzeżenie: Jeden z oktetów w podanym prefiksie jest poza zakresem 0-255. Spróbuj ponownie.{Style.RESET_ALL}")
-                    except ValueError:
-                         # --- CZYSZCZENIE LINII PROMPTU PRZED BŁĘDEM ---
-                         sys.stdout.write("\033[A\033[K")
-                         sys.stdout.flush()
-                         # --- KONIEC CZYSZCZENIA ---
-                         print(f"{Fore.YELLOW}Ostrzeżenie: Podany prefiks zawiera nie-liczbowe części. Spróbuj ponownie.{Style.RESET_ALL}")
-                else:
-                    # --- CZYSZCZENIE LINII PROMPTU PRZED BŁĘDEM ---
-                    sys.stdout.write("\033[A\033[K")
-                    sys.stdout.flush()
-                    # --- KONIEC CZYSZCZENIA ---
-                    print(f"{Fore.YELLOW}Niepoprawny format prefiksu (oczekiwano np. 192.168.1.). Spróbuj ponownie.{Style.RESET_ALL}")
-
-            except EOFError:
-                sys.stdout.write("\r\033[K")
+                prompt_text = f"Podaj prefiks sieciowy (np. 192.168.1.), pełny adres IP (np. 192.168.1.100) lub {Fore.LIGHTMAGENTA_EX}Ctrl+C{Style.RESET_ALL} aby zakończyć: "
+                odpowiedz_uzytkownika = input(prompt_text).strip()
+                
+                sys.stdout.write("\033[A\033[K") # Wyczyść linię inputu
                 sys.stdout.flush()
-                print("\nNie można pobrać prefiksu od użytkownika (EOF). Przerywam.")
-                return None # Zwróć None, aby główna część mogła zareagować
+
+                if not odpowiedz_uzytkownika:
+                    print(f"{Fore.YELLOW}Prefiks/IP nie może być pusty. Spróbuj ponownie.{Style.RESET_ALL}")
+                    continue
+
+                if is_full_ip_address(odpowiedz_uzytkownika):
+                    extracted_prefix = get_prefix_from_ip(odpowiedz_uzytkownika)
+                    if extracted_prefix:
+                        print(f"{Fore.CYAN}Podano pełny adres IP '{odpowiedz_uzytkownika}'.{Style.RESET_ALL}")
+                        try:
+                            prompt_confirm_ip = f"Czy chcesz skanować sieć z prefiksem '{extracted_prefix}'? ({Fore.LIGHTMAGENTA_EX}T/n{Style.RESET_ALL}): "
+                            odp_confirm = input(prompt_confirm_ip).lower().strip()
+                            sys.stdout.write("\033[A\033[K") # Wyczyść linię potwierdzenia
+                            sys.stdout.flush()
+                            if not odp_confirm or odp_confirm.startswith('t') or odp_confirm.startswith('y'):
+                                potwierdzony_prefiks = extracted_prefix
+                                print(f"Używany prefiks sieciowy: {potwierdzony_prefiks}")
+                                break
+                            else:
+                                print(f"{Fore.YELLOW}Skanowanie z prefiksem '{extracted_prefix}' odrzucone. Spróbuj ponownie podać prefiks lub IP.{Style.RESET_ALL}")
+                                continue
+                        except (EOFError, KeyboardInterrupt):
+                            obsluz_przerwanie_uzytkownika()
+                    else:
+                        print(f"{Fore.YELLOW}Nie udało się wyekstrahować prefiksu z '{odpowiedz_uzytkownika}'. Spróbuj ponownie.{Style.RESET_ALL}")
+                        continue
+                else: # Waliduj jako prefiks
+                    nowy_prefiks_test = odpowiedz_uzytkownika
+                    if not nowy_prefiks_test.endswith("."):
+                        nowy_prefiks_test += "."
+                    
+                    if is_valid_prefix_format(nowy_prefiks_test):
+                        potwierdzony_prefiks = nowy_prefiks_test
+                        print(f"Używany prefiks sieciowy: {potwierdzony_prefiks}")
+                        break
+                    else:
+                        print(f"{Fore.YELLOW}Niepoprawny format podanego prefiksu/IP. Spróbuj ponownie.{Style.RESET_ALL}")
+                        continue
             except KeyboardInterrupt:
-                obsluz_przerwanie_uzytkownika()
+                obsluz_przerwanie_uzytkownika() # Ta funkcja obsługuje wyjście
             except Exception as e:
                  sys.stdout.write("\r\033[K")
                  sys.stdout.flush()
                  print(f"\n{Fore.RED}Błąd podczas pobierania odpowiedzi: {e}{Style.RESET_ALL}")
-                 return None # Zwróć None w razie błędu
+                 return None # Zwróć None, aby główna część mogła zareagować
 
     return potwierdzony_prefiks
+
 
 def agreguj_informacje_o_urzadzeniach(
     lista_ip_do_przetworzenia: List[str],
