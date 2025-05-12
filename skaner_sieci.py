@@ -182,6 +182,7 @@ MAX_PING_WORKERS: int = 3 # <--- Dodaj: Maksymalna liczba równoległych pingów
 DEFAULT_LINE_WIDTH: int = 125 # Zdefiniuj stałą szerokość linii
 NAZWY_MAC_PLIK: str = "mac_nazwy.txt" # Nazwa pliku z niestandardowymi nazwami MAC
 NIESTANDARDOWE_PORTY_SERWERA_PLIK: str = "port_serwer.txt" # Nazwa pliku dla niestandardowych portów serwera
+DOMYSLNA_NAZWA_PLIKU_HTML_BAZOWA: str = "raport_skanowania.html"
 INPUT_TIMEOUT_SECONDS = 10 # Czas w sekundach na reakcję użytkownika
 MAX_PORT_SCAN_WORKERS: int = 10 # Dostosuj wg potrzeb Maksymalna liczba wątków do skanowania portów dla JEDNEGO hosta
 TIMEOUT_SENTINEL = object() # Unikalny obiekt sygnalizujący timeout
@@ -2988,26 +2989,52 @@ nazwa, rozs = rozdziel_nazwe_pliku(plik_zaczynajacy_od_kropki)
 # print(f"Nazwa bazowa: {nazwa}") # Zwróci ".bashrc
 
 
+def ustal_finalna_nazwe_pliku_html(
+    nazwa_pliku_bazowa_html: str,
+    siec_prefix: Optional[str] = None,
+    default_start_ip_dla_nazwy: int = DEFAULT_START_IP  # Użyj globalnej stałej jako domyślnej
+) -> str:
+    """
+    Ustala finalną nazwę pliku HTML, opcjonalnie dodając prefiks sieci i startowy IP.
+
+    Args:
+        nazwa_pliku_bazowa_html: Bazowa nazwa pliku HTML (np. "raport_skanowania.html").
+        siec_prefix: Opcjonalny prefiks sieciowy (np. "192.168.0.").
+        default_start_ip_dla_nazwy: Domyślny startowy adres IP używany w nazwie pliku.
+
+    Returns:
+        Finalna nazwa pliku HTML z rozszerzeniem.
+    """
+    nazwa_bazowa_pliku, rozszerzenie_pliku = rozdziel_nazwe_pliku(nazwa_pliku_bazowa_html)
+
+    if siec_prefix:
+        # Usuń ostatnią kropkę z prefiksu i zamień pozostałe kropki na podkreślniki
+        prefix_dla_nazwy = siec_prefix.rstrip('.').replace('.', '_')
+        # Dodaj startowy IP do prefiksu dla nazwy pliku
+        prefix_with_start_ip = f"{prefix_dla_nazwy}_{default_start_ip_dla_nazwy}"
+        finalna_nazwa_pliku = f"{nazwa_bazowa_pliku}_{prefix_with_start_ip}{rozszerzenie_pliku}"
+    else:
+        finalna_nazwa_pliku = nazwa_pliku_bazowa_html
+    
+    return finalna_nazwa_pliku
+
 def zapisz_tabele_urzadzen_do_html(
     lista_urzadzen: List[DeviceInfo],
     kolumny_do_wyswietlenia: List[str],
     opisy_portow_globalne: Dict[int, str],
     configured_custom_server_ports_map: Dict[str, List[int]],
-    nazwa_pliku_html: str = "raport_skanowania.html", # Domyślna nazwa pliku
+    nazwa_pliku_html: str = DOMYSLNA_NAZWA_PLIKU_HTML_BAZOWA, # Użyj globalnej stałej
     siec_prefix: Optional[str] = None # Opcjonalny prefiks sieci do dodania do nazwy pliku
 ) -> Optional[str]: # Zmieniono typ zwracany na Optional[str]
     """
     Zapisuje tabelę urządzeń do pliku HTML z interaktywnym sortowaniem.
     (Reszta opisu bez zmian)
     """
-    nazwa_bazowa_pliku, rozszerzenie_pliku = rozdziel_nazwe_pliku(nazwa_pliku_html)
-
-    if siec_prefix:
-        prefix_dla_nazwy = siec_prefix.rstrip('.').replace('.', '_')
-        prefix_with_start_ip = f"{prefix_dla_nazwy}_{DEFAULT_START_IP}"
-        finalna_nazwa_pliku_html = f"{nazwa_bazowa_pliku}_{prefix_with_start_ip}{rozszerzenie_pliku}"
-    else:
-        finalna_nazwa_pliku_html = nazwa_pliku_html
+    finalna_nazwa_pliku_html = ustal_finalna_nazwe_pliku_html(
+        nazwa_pliku_bazowa_html=nazwa_pliku_html,
+        siec_prefix=siec_prefix
+        # DEFAULT_START_IP jest używane domyślnie w nowej funkcji
+    )
 
     aktywne_kolumny = {k: v for k, v in KOLUMNY_TABELI.items() if k in kolumny_do_wyswietlenia}
     
@@ -3353,6 +3380,74 @@ def wyswietl_legende_kolorow_urzadzen(line_width: int = DEFAULT_LINE_WIDTH) -> N
     # Można dodać linię końcową, jeśli chcesz
     # print("-" * line_width)
 
+def zapytaj_czy_zapisac_raport_html(
+    domyslna_nazwa_bazowa_konfiguracyjna: str,
+    siec_prefix_do_wyswietlenia: Optional[str]
+) -> Tuple[bool, Optional[str]]:
+    """
+    Pyta użytkownika, czy chce zapisać raport HTML i jaką nazwę pliku użyć.
+
+    Args:
+        domyslna_nazwa_bazowa_konfiguracyjna: Domyślna bazowa nazwa pliku (np. "raport.html").
+        siec_prefix_do_wyswietlenia: Opcjonalny prefiks sieci, który zostanie użyty
+                                     do skonstruowania proponowanej pełnej nazwy pliku.
+
+    Returns:
+        Krotka (czy_zapisac: bool, nazwa_pliku_bazowa_do_uzycia: Optional[str]):
+        - czy_zapisac: True, jeśli użytkownik chce zapisać.
+        - nazwa_pliku_bazowa_do_uzycia:
+            - Jeśli użytkownik wybrał domyślną nazwę (lub proponowaną): None (sygnalizuje użycie domyslna_nazwa_bazowa_konfiguracyjna).
+            - Jeśli użytkownik podał własną nazwę: string z tą nazwą (z dodanym rozszerzeniem, jeśli brak).
+            - Jeśli czy_zapisac jest False: None.
+    """
+    try:
+        proponowana_pelna_nazwa = ustal_finalna_nazwe_pliku_html(
+            nazwa_pliku_bazowa_html=domyslna_nazwa_bazowa_konfiguracyjna,
+            siec_prefix=siec_prefix_do_wyswietlenia
+        )
+        
+        prompt_text = (
+            f"Czy chcesz zapisać raport HTML? Proponowana nazwa to: {Fore.CYAN}{proponowana_pelna_nazwa}{Style.RESET_ALL} ({Fore.LIGHTMAGENTA_EX}T/n{Style.RESET_ALL}) lub podaj własną bazową nazwę: "
+            # f"({Fore.LIGHTMAGENTA_EX}T/Enter{Style.RESET_ALL}=użyj proponowanej | "
+            # f"{Fore.LIGHTMAGENTA_EX}N{Style.RESET_ALL}=nie zapisuj | "
+            # f"{Fore.LIGHTMAGENTA_EX}inna nazwa{Style.RESET_ALL}=podaj własną bazową nazwę): "
+        )
+        odpowiedz = input(prompt_text).strip()
+
+        if not odpowiedz or odpowiedz.lower() == 't' or odpowiedz.lower() == 'y':
+            # print(f"Zapisywanie raportu jako: {proponowana_pelna_nazwa}")
+            return True, None # Sygnalizuje użycie domyślnej nazwy bazowej (tej z argumentu funkcji)
+        # elif odpowiedz.lower().startswith('n'):
+        elif odpowiedz.lower() == 'n':
+            print("Pominięto zapisywanie raportu HTML.")
+            return False, None
+        else:
+            # Użytkownik podał własną nazwę bazową
+            custom_name_input = odpowiedz
+            _ , domyslne_rozszerzenie_z_konfiguracji = rozdziel_nazwe_pliku(domyslna_nazwa_bazowa_konfiguracyjna)
+            custom_name_base_part, custom_name_ext_part = rozdziel_nazwe_pliku(custom_name_input)
+
+            final_custom_base_name_with_ext: str
+            if not custom_name_ext_part: # Jeśli użytkownik nie podał rozszerzenia w swojej nazwie
+                final_custom_base_name_with_ext = custom_name_base_part + domyslne_rozszerzenie_z_konfiguracji
+                # print(f"Do podanej nazwy '{custom_name_base_part}' dodano domyślne rozszerzenie: '{domyslne_rozszerzenie_z_konfiguracji}'.")
+            else:
+                final_custom_base_name_with_ext = custom_name_input
+            
+            # Ta nazwa (final_custom_base_name_with_ext) będzie teraz *bazą* dla funkcji
+            # ustal_finalna_nazwe_pliku_html wywoływanej wewnątrz zapisz_tabele_urzadzen_do_html.
+            # Funkcja ta doda prefiks sieciowy, jeśli jest dostępny.
+            # print(f"Użyto niestandardowej nazwy bazowej: {Fore.CYAN}{final_custom_base_name_with_ext}{Style.RESET_ALL}")
+            return True, final_custom_base_name_with_ext
+
+    except (EOFError, KeyboardInterrupt):
+        obsluz_przerwanie_uzytkownika()
+        return False, None # Chociaż skrypt się zakończy, zwracamy spójny typ
+    except Exception as e:
+        print(f"{Fore.RED}Wystąpił błąd podczas pytania o zapis raportu: {e}{Style.RESET_ALL}")
+        return False, None
+
+
 def zapytaj_i_otworz_raport_html(sciezka_do_pliku_html: Optional[str]) -> None:
     """
     Pyta użytkownika, czy chce otworzyć wygenerowany raport HTML w przeglądarce.
@@ -3365,7 +3460,7 @@ def zapytaj_i_otworz_raport_html(sciezka_do_pliku_html: Optional[str]) -> None:
         return
 
     try:
-        prompt_text = f"Czy chcesz otworzyć raport HTML ({os.path.basename(sciezka_do_pliku_html)}) w przeglądarce? (T/n): "
+        prompt_text = f"Czy chcesz otworzyć raport HTML ({os.path.basename(sciezka_do_pliku_html)}) w przeglądarce? ({Fore.LIGHTMAGENTA_EX}T/n{Style.RESET_ALL}): "
         odpowiedz_otwarcie = input(prompt_text).lower().strip()
         # Jeśli użytkownik naciśnie Enter (pusta odpowiedź) LUB wpisze 't'/'y'
         if not odpowiedz_otwarcie or odpowiedz_otwarcie.startswith('t') or odpowiedz_otwarcie.startswith('y'):
@@ -3574,23 +3669,38 @@ if __name__ == "__main__":
 
         # Sprawdź, czy są jakieś urządzenia do zapisania w raporcie HTML
         if wynik_agregacji is not False and lista_urzadzen_do_wyswietlenia: # Dodatkowy warunek na listę
-            # --- ZAPIS DO PLIKU HTML ---
-            sciezka_do_zapisanego_html = zapisz_tabele_urzadzen_do_html(
-                lista_urzadzen_do_wyswietlenia, # Użyj przygotowanej listy
-                kolumny_dla_html_reportu, # Przekaż odpowiedni zestaw kolumn
-                OPISY_PORTOW, # Przekaż globalny słownik opisów portów
-                niestandardowe_porty_serwera_mapa, # Przekaż mapę niestandardowych portów
-                siec_prefix=siec_prefix # Przekaż prefiks sieciowy
+            chce_zapisac, nazwa_bazowa_od_uzytkownika_lub_none = zapytaj_czy_zapisac_raport_html(
+                domyslna_nazwa_bazowa_konfiguracyjna=DOMYSLNA_NAZWA_PLIKU_HTML_BAZOWA,
+                siec_prefix_do_wyswietlenia=siec_prefix
             )
-            # --- KONIEC ZAPISU DO HTML ---
 
-            # --- PYTANIE O OTWARCIE PLIKU HTML (użycie nowej funkcji) ---
-            zapytaj_i_otworz_raport_html(sciezka_do_zapisanego_html)
-            # --- KONIEC PYTANIA O OTWARCIE PLIKU HTML ---
+            if chce_zapisac:
+                # Ustal bazową nazwę pliku do przekazania do funkcji zapisującej
+                nazwa_pliku_bazowa_do_zapisu = DOMYSLNA_NAZWA_PLIKU_HTML_BAZOWA
+                if nazwa_bazowa_od_uzytkownika_lub_none: # Jeśli użytkownik podał własną
+                    nazwa_pliku_bazowa_do_zapisu = nazwa_bazowa_od_uzytkownika_lub_none
+                
+                # --- ZAPIS DO PLIKU HTML ---
+                sciezka_do_zapisanego_html = zapisz_tabele_urzadzen_do_html(
+                    lista_urzadzen_do_wyswietlenia,
+                    kolumny_dla_html_reportu, 
+                    OPISY_PORTOW, 
+                    niestandardowe_porty_serwera_mapa,
+                    nazwa_pliku_html=nazwa_pliku_bazowa_do_zapisu, # Przekaż ustaloną nazwę bazową
+                    siec_prefix=siec_prefix 
+                )
+                # --- KONIEC ZAPISU DO HTML ---
+
+                # --- PYTANIE O OTWARCIE PLIKU HTML ---
+                if sciezka_do_zapisanego_html: # Pytaj tylko jeśli plik został pomyślnie zapisany
+                    zapytaj_i_otworz_raport_html(sciezka_do_zapisanego_html)
+                # --- KONIEC PYTANIA O OTWARCIE PLIKU HTML ---
+            # else: Komunikat o pominięciu jest już w zapytaj_czy_zapisac_raport_html
+            #     pass 
         else:
             print(f"{Fore.YELLOW}Pominięto generowanie raportu HTML, ponieważ nie znaleziono żadnych urządzeń.{Style.RESET_ALL}")
        
         wyswietl_tekst_w_linii("-",DEFAULT_LINE_WIDTH,"Skanowanie zakończone. Przewiń wyżej, aby zobaczyć wyniki.",Fore.LIGHTCYAN_EX,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
     except KeyboardInterrupt:
         obsluz_przerwanie_uzytkownika()
-        sys.exit(0) # Użyj standardowego wyjścia
+        sys.exit(0)
