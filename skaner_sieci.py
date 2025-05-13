@@ -489,13 +489,34 @@ def pobierz_informacje_o_najnowszej_wersji(url: str) -> Optional[Dict[str, str]]
     if not REQUESTS_AVAILABLE:
         print(f"{Fore.YELLOW}Informacja: Biblioteka 'requests' nie jest dostępna. Sprawdzanie aktualizacji niemożliwe.{Style.RESET_ALL}")
         return None
+    # Sprawdź, czy urllib3.exceptions są dostępne, jeśli requests jest
+    NameResolutionErrorType = getattr(getattr(getattr(requests.packages, 'urllib3', {}), 'exceptions', {}), 'NameResolutionError', None)
+    
     try:
-        print(f"{Fore.CYAN}Sprawdzanie dostępności nowej wersji skryptu...{Style.RESET_ALL}")
+        print(f"\n")
+        wyswietl_tekst_w_linii("-", DEFAULT_LINE_WIDTH, "Sprawdzanie dostępności nowej wersji skryptu...", Fore.CYAN, Fore.LIGHTCYAN_EX, dodaj_odstepy=False)
         response = requests.get(url, timeout=10)
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
-        print(f"{Fore.YELLOW}Nie udało się pobrać informacji o wersji: {e}{Style.RESET_ALL}")
+        # print(f"{Fore.YELLOW}Nie udało się pobrać informacji o wersji: {e}{Style.RESET_ALL}")
+                # Dodatkowa, bardziej szczegółowa informacja dla problemów z DNS
+        is_name_resolution_error = False        
+        if NameResolutionErrorType: # Sprawdź, czy typ błędu jest dostępny
+            # Sprawdź, czy przyczyna błędu (często w e.args[0].reason dla ConnectionError) to NameResolutionError
+            if e.args and hasattr(e.args[0], 'reason') and isinstance(e.args[0].reason, NameResolutionErrorType):
+                is_name_resolution_error = True
+            # Dodatkowy, mniej typowy przypadek: NameResolutionError jest bezpośrednio w e.args[0] lub w samym e
+            elif e.args and isinstance(e.args[0], NameResolutionErrorType):
+                is_name_resolution_error = True
+            elif isinstance(e, NameResolutionErrorType):
+                is_name_resolution_error = True
+
+        if is_name_resolution_error:
+            print(f"{Fore.YELLOW}Nie udało się pobrać informacji o wersji.{Style.RESET_ALL}") # Uproszczony komunikat
+            print(f"{Fore.YELLOW}Przyczyna: Problem z tłumaczeniem nazwy hosta (DNS). Sprawdź połączenie internetowe i konfigurację DNS.{Style.RESET_ALL}")
+        else:
+            print(f"{Fore.YELLOW}Nie udało się pobrać informacji o wersji: {e}{Style.RESET_ALL}") # Ogólny błąd RequestException, jeśli to nie DNS
         return None
     except json.JSONDecodeError:
         print(f"{Fore.RED}Błąd: Nie udało się sparsować informacji o wersji (niepoprawny JSON).{Style.RESET_ALL}")
@@ -548,7 +569,7 @@ def sprawdz_i_zaproponuj_aktualizacje():
                     nazwa_nowego_pliku = f"{nazwa_bazowa}_v{najnowsza_wersja_str.replace('.', '_')}{rozszerzenie}"
                     if pobierz_i_zapisz_aktualizacje(url_pobierania, nazwa_nowego_pliku):
                         # Można tu dodać sugestię, aby użytkownik zakończył bieżący skrypt
-                        print(f"{Fore.CYAN}Możesz teraz zakończyć działanie tego skryptu (Ctrl+C) i uruchomić nową wersję.{Style.RESET_ALL}")
+                        print(f"{Fore.CYAN}Możesz teraz zakończyć działanie tego skryptu ({Fore.LIGHTMAGENTA_EX}Ctrl+C{Style.RESET_ALL}) i uruchomić nową wersję.{Style.RESET_ALL}")
                     else:
                         print(f"{Fore.RED}Pobieranie aktualizacji nie powiodło się.{Style.RESET_ALL}")
                 else:
@@ -1240,7 +1261,7 @@ def skanuj_wybrane_porty_dla_ip(ip: str, porty_do_skanowania: Optional[List[int]
     Args:
         ip: Adres IP celu.
         porty_do_skanowania: Opcjonalna lista numerów portów do sprawdzenia.
-                             Jeśli None, używane są klucze z OPISY_PORTOW.
+        Jeśli None, używane są klucze z OPISY_PORTOW.
         timeout: Czas oczekiwania na połączenie dla każdego portu w sekundach.
 
     Returns:
@@ -3041,6 +3062,34 @@ def zapisz_tabele_urzadzen_do_html(
     # Konwertuj listę kolumn do formatu JSON dla JavaScript
     kolumny_do_wyswietlenia_json = json.dumps(kolumny_do_wyswietlenia)
 
+    # Zdefiniuj kolory przed blokiem try, aby były dostępne w blokach except
+    # green_color = Fore.GREEN if COLORAMA_AVAILABLE else ""
+    # red_color = Fore.RED if COLORAMA_AVAILABLE else ""
+    # reset_color = Style.RESET_ALL if COLORAMA_AVAILABLE else ""
+    # PRZENIESIONO DEFINICJĘ script_name_for_wol NA POCZĄTEK,
+    # ABY BYŁA DOSTĘPNA PODCZAS TWORZENIA F-STRINGA html_content.
+    script_name_for_wol = html.escape(os.path.basename(__file__))
+
+
+#    # --- ROZSZERZONE DEBUGOWANIE DLA F-STRING ---
+#     print(f"{Fore.MAGENTA}DEBUG EXTRA: Typ zmiennej script_name_for_wol: {type(script_name_for_wol)}{Style.RESET_ALL}")
+#     print(f"{Fore.MAGENTA}DEBUG EXTRA: Wartość script_name_for_wol: '{script_name_for_wol}'{Style.RESET_ALL}")
+#     print(f"{Fore.MAGENTA}DEBUG EXTRA: Reprezentacja (repr) script_name_for_wol: {repr(script_name_for_wol)}{Style.RESET_ALL}")
+
+#     test_placeholder = "{script_name_for_wol}"
+#     print(f"{Fore.MAGENTA}DEBUG EXTRA: Testowy placeholder: '{test_placeholder}'{Style.RESET_ALL}")
+
+#     # Testowy, bardzo prosty f-string
+#     minimal_fstring_output = f"TEST_SCRIPT_NAME = \"{script_name_for_wol}\""
+#     print(f"{Fore.MAGENTA}DEBUG EXTRA: Wynik minimalnego f-stringa: '{minimal_fstring_output}'{Style.RESET_ALL}")
+
+#     if test_placeholder in minimal_fstring_output:
+#         print(f"{Fore.RED}DEBUG EXTRA: ALARM! Minimalny f-string również zawiera placeholder '{test_placeholder}' zamiast wartości!{Style.RESET_ALL}")
+#     elif script_name_for_wol in minimal_fstring_output:
+#         print(f"{Fore.GREEN}DEBUG EXTRA: OK! Minimalny f-string poprawnie wstawił wartość '{script_name_for_wol}'.{Style.RESET_ALL}")
+#     else:
+#         print(f"{Fore.YELLOW}DEBUG EXTRA: Coś dziwnego z minimalnym f-stringiem - ani placeholder, ani wartość nie zostały znalezione w oczekiwany sposób.{Style.RESET_ALL}")
+#     # --- KONIEC ROZSZERZONEGO DEBUGOWANIA ---
 
     html_content = f"""
 <!DOCTYPE html>
@@ -3073,15 +3122,20 @@ def zapisz_tabele_urzadzen_do_html(
             margin-left: 5px;
             color: #a0d0a0; /* Jaśniejszy kolor dla nieaktywnych wskaźników */
             font-size: 0.9em;
-            /* Pozycjonowanie wskaźnika, jeśli chcemy go np. po prawej stronie */
-            /* position: absolute; */
-            /* right: 10px; */
-            /* top: 50%; */
-            /* transform: translateY(-50%); */
         }}
         .sort-indicator.active {{
             color: white; /* Kolor aktywnego wskaźnika */
         }}
+
+        /* Style dla modala WoL */
+        .wol-modal {{ display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; overflow: auto; background-color: rgba(0,0,0,0.4); }}
+        .wol-modal-content {{ background-color: #fefefe; margin: 10% auto; padding: 20px; border: 1px solid #888; width: 90%; max-width: 600px; box-shadow: 0 4px 8px 0 rgba(0,0,0,0.2),0 6px 20px 0 rgba(0,0,0,0.19); border-radius: 5px; text-align: left; }}
+        .wol-modal-close {{ color: #aaa; float: right; font-size: 28px; font-weight: bold; cursor: pointer; }}
+        .wol-modal-close:hover, .wol-modal-close:focus {{ color: black; text-decoration: none; cursor: pointer; }}
+        #wolCommandInput {{ width: calc(100% - 90px); padding: 8px; margin-bottom: 10px; border: 1px solid #ccc; border-radius: 4px; background-color: #f9f9f9; }}
+        .wol-modal-content button {{ padding: 8px 15px; background-color: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; }}
+        .wol-modal-content button:hover {{ background-color: #45a049; }}
+        #copyWolStatus {{ font-size: 0.9em; color: green; margin-top: 5px; }}
     </style>
 </head>
 <body>
@@ -3091,6 +3145,7 @@ def zapisz_tabele_urzadzen_do_html(
             <tr>
 """
     # Nagłówki tabeli
+
     for col_key in kolumny_do_wyswietlenia:
         if col_key in aktywne_kolumny:
             col_config = aktywne_kolumny[col_key]
@@ -3110,7 +3165,7 @@ def zapisz_tabele_urzadzen_do_html(
         <tbody id="devicesTableBody">
 """
 
-     # Wiersze tabeli
+    # Wiersze tabeli
     for idx, device in enumerate(lista_urzadzen, start=1):
         mac_display = device.mac if device.mac else "Nieznany MAC"
         
@@ -3120,13 +3175,13 @@ def zapisz_tabele_urzadzen_do_html(
             for port_num in sorted(list(device.open_ports)):
                 port_display_str = str(port_num)
                 if port_num in device.open_custom_server_ports: 
-                    protocol = "http" 
+                    protocol = "http"
                     if configured_custom_server_ports_map.get("https") and port_num in configured_custom_server_ports_map["https"]:
                         protocol = "https"
                     elif configured_custom_server_ports_map.get("http") and port_num in configured_custom_server_ports_map["http"]:
-                         protocol = "http"
+                        protocol = "http"
                     link_href = f"{protocol}://{html.escape(device.ip)}:{port_num}"
-                    port_display_str = f'<a href="{link_href}" target="_blank">{port_num}</a>'
+                    port_display_str = f'<a href="{link_href}" target="_blank" " title="Otwórz aplikacje webową na tym porcie." >{port_num}</a>'
                 open_ports_html_parts.append(port_display_str)
         porty_html_output = ', '.join(open_ports_html_parts) if open_ports_html_parts else ""
 
@@ -3146,15 +3201,22 @@ def zapisz_tabele_urzadzen_do_html(
             nazwa_do_wyswietlenia_hosta = f"{content_for_host_display} {html.escape(oznaczenie_str)}"
         else:
             nazwa_do_wyswietlenia_hosta = content_for_host_display
+        # Przygotowanie zawartości komórki MAC z linkiem WoL
+        mac_display_val = device.mac if device.mac else "Nieznany MAC"
+        mac_html_content = html.escape(mac_display_val)
+        if device.mac and device.mac != "Nieznany MAC": # Tylko jeśli MAC jest znany i nie jest to placeholder
+            # Użyj device.mac (oryginalny, nieoczyszczony MAC, jeśli taki byłby problem)
+            # ale mac_display_val powinien być już poprawnym MACem, jeśli device.mac istnieje
+            mac_html_content = f'<a href="javascript:void(0);" onclick="showWolCommand(\'{html.escape(device.mac)}\')" title="Wyślij pakiet Wake-on-LAN">{html.escape(mac_display_val)}</a>'
+
 
         row_data_base = {
             "lp": str(idx),
             "ip": html.escape(device.ip),
-            "mac": html.escape(mac_display),
+            "mac": mac_html_content, # Użyj przygotowanej zawartości HTML dla MAC
             "host": nazwa_do_wyswietlenia_hosta, # Ta wartość jest już gotowa do wyświetlenia
             "porty": porty_html_output,
-            "os": html.escape(device.guessed_os),
-            "oui": html.escape(device.oui_vendor)
+            "os": html.escape(device.guessed_os), "oui": html.escape(device.oui_vendor)
         }
 
         html_content += "            <tr class='device-row'>\n" # Dodajemy klasę dla JS
@@ -3181,7 +3243,7 @@ def zapisz_tabele_urzadzen_do_html(
         posortowane_porty = sorted(list(wszystkie_otwarte_porty_set))
         for port in posortowane_porty:
             opis = opisy_portow_globalne.get(port, "Nieznana usługa")
-            html_content += f"            <li><b>Port {html.escape(str(port))}:</b> {html.escape(opis)}</li>\n"
+            html_content += f"            <li><b>{html.escape(str(port))}:</b> {html.escape(opis)}</li>\n"
     else:
         html_content += "            <li>Brak wykrytych otwartych portów.</li>\n"
     html_content += """
@@ -3203,6 +3265,18 @@ def zapisz_tabele_urzadzen_do_html(
         html_content += "            <li>Brak zidentyfikowanych typów systemów/urządzeń.</li>\n"
     html_content += """
         </ul>
+    </div>
+    
+    <div id="wolModal" class="wol-modal">
+        <div class="wol-modal-content">
+            <span class="wol-modal-close" onclick="closeWolModal()">&times;</span>
+            <h2>Wyślij Pakiet Wake-on-LAN</h2>
+            <p>Aby wysłać pakiet Wake-on-LAN (WoL) do urządzenia z adresem MAC <strong id="wolMacAddress"></strong>, możesz użyć poniższego polecenia w terminalu, będąc w katalogu, w którym znajduje się skrypt:</p>
+            <input type="text" id="wolCommandInput" readonly>
+            <button onclick="copyWolCommand()">Kopiuj</button>
+            <p id="copyWolStatus"></p>
+            <p style="font-size:0.8em; color:#555;">Upewnij się, że urządzenie docelowe oraz jego karta sieciowa są skonfigurowane do odbierania pakietów WoL, a zapory sieciowe nie blokują portu (domyślnie 9 UDP).</p>
+        </div>
     </div>
 
     <script>
@@ -3290,7 +3364,7 @@ def zapisz_tabele_urzadzen_do_html(
                 } else if (currentSortDirection === 'desc') {
                     // Opcjonalnie: trzecie kliknięcie resetuje sortowanie lub wraca do 'asc'
                     // Tutaj wracamy do 'asc' dla prostoty
-                     currentSortDirection = 'asc'; 
+                     currentSortDirection = 'asc';
                     // currentSortDirection = 'none'; // Jeśli chcesz resetować
                 } else { // Było 'none'
                     currentSortDirection = 'asc';
@@ -3302,7 +3376,7 @@ def zapisz_tabele_urzadzen_do_html(
             
             // if (currentSortDirection === 'none' && currentSortKey === columnKey) {
             //     // Jeśli chcemy resetować, to tutaj odtwarzamy oryginalną kolejność
-            //     // To wymagałoby przechowywania oryginalnych danych lub ponownego renderowania
+            //     // To wymagałoby przechowywania oryginalnych danychlub ponownego renderowania
             //     // Na razie pomijamy pełny reset dla uproszczenia
             //     updateSortIndicators(columnKey, 'none');
             //     // return; // Nie sortuj, jeśli reset
@@ -3338,18 +3412,87 @@ def zapisz_tabele_urzadzen_do_html(
                 });
             });
         });
+
+        // Funkcje dla modala WoL
+        const SCRIPT_NAME_WOL = "%%PLACEHOLDER_SCRIPT_NAME_WOL%%"; // Zmieniono na placeholder
+
+
+        function showWolCommand(macAddress) {{ // ZMIANA: {{ -> {
+            const modal = document.getElementById('wolModal');
+            const commandInput = document.getElementById('wolCommandInput');
+            const macDisplay = document.getElementById('wolMacAddress');
+            const copyStatus = document.getElementById('copyWolStatus');
+
+            macDisplay.textContent = macAddress;
+            commandInput.value = 'python ' + SCRIPT_NAME_WOL + ' -wol ' + macAddress; // SCRIPT_NAME_WOL jest już wartością
+            modal.style.display = 'block';
+            copyStatus.textContent = ''; // Wyczyść status kopiowania
+        }} // ZMIANA: }} -> }
+
+        function closeWolModal() {{ // ZMIANA: {{ -> {
+            const modal = document.getElementById('wolModal');
+            modal.style.display = 'none';
+        }} // ZMIANA: }} -> }
+
+        function copyWolCommand() {{ // ZMIANA: {{ -> {
+            const commandInput = document.getElementById('wolCommandInput');
+            commandInput.select(); // Zaznacz tekst w polu
+            navigator.clipboard.writeText(commandInput.value).then(() => {{ // ZMIANA: {{ -> {
+                document.getElementById('copyWolStatus').textContent = 'Skopiowano do schowka!';
+            }}, (err) => {{ // POPRAWKA: Zmieniono {{{{ na {{
+                document.getElementById('copyWolStatus').textContent = 'Błąd kopiowania!';
+                console.error('Błąd kopiowania WoL: ', err);
+            }}); // POPRAWKA: Odpowiadający nawias zamykający (logicznie zmieniony z }}}} na }})
+        }} // ZMIANA: }} -> }
     </script>
 </body>
 </html>
 """
+    # --- Obejście problemu z interpolacją f-stringa dla SCRIPT_NAME_WOL ---
+    # Tworzymy wartość, która ma być wstawiona do JavaScript (z cudzysłowami)
+    rzeczywista_wartosc_js_script_name = f'"{script_name_for_wol}"'
+    # Zamieniamy placeholder w html_content na rzeczywistą wartość
+    html_content = html_content.replace('"%%PLACEHOLDER_SCRIPT_NAME_WOL%%"', rzeczywista_wartosc_js_script_name)
+    # --- Koniec obejścia ---
+    
+
+
+    # ... definicja html_content ...
+    # script_name_for_wol = html.escape(os.path.basename(__file__)) # Upewnij się, że to jest zdefiniowane
+
+    # # --- POCZĄTEK DEBUGOWANIA ---
+    # print(f"{Fore.MAGENTA}DEBUG: Wartość dla script_name_for_wol: '{script_name_for_wol}'{Style.RESET_ALL}")
+    # # Wypisz fragment kodu HTML tuż przed miejscem, gdzie jest placeholder {0}
+    # # ZMIANA: Usunięto stary blok debugowania, ponieważ .format() nie jest już używane w ten sposób.
+    # # Można dodać nowy, jeśli potrzebne, np. sprawdzający obecność {script_name_for_wol}
+    # script_name_placeholder_in_fstring = f'"{script_name_for_wol}"' # Tak powinno wyglądać w f-stringu
+    # placeholder_index_new = html_content.find(script_name_placeholder_in_fstring)
+    # if placeholder_index_new != -1:
+    #     print(f"{Fore.CYAN}DEBUG: Znaleziono wstawioną nazwę skryptu '{script_name_placeholder_in_fstring}' w html_content (co jest oczekiwane).{Style.RESET_ALL}")
+    #     # start_index = max(0, placeholder_index_new - 100)
+    #     # end_index = min(len(html_content), placeholder_index_new + len(script_name_placeholder_in_fstring) + 100)
+    #     # print(f"{Fore.CYAN}DEBUG: Fragment html_content wokół wstawionej nazwy skryptu:\n"
+    #     #       f"...{html_content[start_index:placeholder_index_new]}"
+    #     #       f"{Fore.YELLOW}{html_content[placeholder_index_new : placeholder_index_new + len(script_name_placeholder_in_fstring)]}{Fore.CYAN}"
+    #     #       f"{html_content[placeholder_index_new + len(script_name_placeholder_in_fstring) : end_index]}...{Style.RESET_ALL}")
+    # else:
+    #     print(f"{Fore.RED}DEBUG: Nie znaleziono wstawionej nazwy skryptu '{script_name_placeholder_in_fstring}' w html_content!{Style.RESET_ALL}")
+    
+    # # --- KONIEC DEBUGOWANIA ---
+
+
+
+
+
     try:
-        with open(finalna_nazwa_pliku_html, "w", encoding="utf-8") as f:
-            f.write(html_content)
-        
+        # Zdefiniuj kolory tutaj, aby były dostępne
         green_color = Fore.GREEN if COLORAMA_AVAILABLE else ""
         red_color = Fore.RED if COLORAMA_AVAILABLE else ""
         reset_color = Style.RESET_ALL if COLORAMA_AVAILABLE else ""
-        
+
+        with open(finalna_nazwa_pliku_html, "w", encoding="utf-8") as f:
+            f.write(html_content) # ZMIANA: Usunięto .format()
+
         abs_path_pliku_html = os.path.abspath(finalna_nazwa_pliku_html)
         print(f"{green_color}Pomyślnie zapisano raport do pliku: {abs_path_pliku_html}{reset_color}")
         return abs_path_pliku_html # Zwróć pełną ścieżkę do pliku
@@ -3359,7 +3502,7 @@ def zapisz_tabele_urzadzen_do_html(
     except Exception as e:
         print(f"{red_color}Nieoczekiwany błąd podczas zapisu pliku HTML: {e}{reset_color}")
         return None # Zwróć None w przypadku błędu
-    
+
 def wyswietl_legende_kolorow_urzadzen(line_width: int = DEFAULT_LINE_WIDTH) -> None:
     """
     Wyświetla legendę opisującą znaczenie kolorów używanych
@@ -3473,6 +3616,152 @@ def zapytaj_i_otworz_raport_html(sciezka_do_pliku_html: Optional[str]) -> None:
         print(f"{Fore.RED}Nie udało się automatycznie otworzyć pliku w przeglądarce: {e}{Style.RESET_ALL}")
         print(f"{Fore.YELLOW}Możesz otworzyć plik ręcznie: {sciezka_do_pliku_html}{Style.RESET_ALL}")
 
+def wyslij_wol_packet(mac_address_str: str, broadcast_ip: str = "255.255.255.255", port: int = 9) -> bool:
+    """
+    Wysyła pakiet Magic (Wake-on-LAN) na podany adres MAC.
+
+    Args:
+        mac_address_str: Adres MAC urządzenia docelowego w formacie string
+                         (np. "00:1A:2B:3C:4D:5E", "00-1A-2B-3C-4D-5E", "001A2B3C4D5E").
+        broadcast_ip: Adres IP broadcast, na który ma zostać wysłany pakiet Magic.
+                      Domyślnie "255.255.255.255", co jest ogólnym adresem broadcast
+                      i zazwyczaj działa poprawnie w lokalnych podsieciach (np. /24).
+                      W razie problemów, można podać specyficzny adres
+                      broadcast podsieci, np. "192.168.1.255" dla sieci 192.168.1.0/24.
+        port: Port docelowy dla pakietu WoL. Domyślnie 9. Czasem używany jest też port 7.
+
+    Returns:
+        bool: True jeśli pakiet został wysłany pomyślnie, False w przeciwnym razie.
+    """
+    # 1. Walidacja i normalizacja adresu MAC
+    # Usuń popularne separatory i przekształć na ciąg 12 znaków heksadecymalnych
+    mac_clean = re.sub(r'[^0-9a-fA-F]', '', mac_address_str)
+    if len(mac_clean) != 12:
+        print(f"{Fore.RED}Błąd: Nieprawidłowy format adresu MAC '{mac_address_str}'. Oczekiwano 12 znaków heksadecymalnych.{Style.RESET_ALL}")
+        return False
+    
+    try:
+        mac_bytes = bytes.fromhex(mac_clean)
+    except ValueError:
+        print(f"{Fore.RED}Błąd: Adres MAC '{mac_address_str}' zawiera nieprawidłowe znaki heksadecymalne.{Style.RESET_ALL}")
+        return False
+
+    # 2. Konstrukcja pakietu Magic
+    # Składa się z 6 bajtów 0xFF, a następnie 16-krotnego powtórzenia adresu MAC (6 bajtów)
+    magic_packet = b'\xff' * 6 + mac_bytes * 16
+
+    # 3. Wysłanie pakietu używając gniazda UDP
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        # Umożliwienie wysyłania pakietów broadcast
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        try:
+            sock.sendto(magic_packet, (broadcast_ip, port))
+            print(f"{Fore.GREEN}Pakiet Magic (WoL) został pomyślnie wysłany do {mac_address_str.upper()} na adres {broadcast_ip}:{port}.{Style.RESET_ALL}")
+            return True
+        except socket.gaierror: # Błąd związany z adresem (np. nieprawidłowy broadcast_ip)
+            print(f"{Fore.RED}Błąd: Nieprawidłowy adres broadcast '{broadcast_ip}' lub problem z rozpoznaniem nazwy.{Style.RESET_ALL}")
+            return False
+        except OSError as e: # Inne błędy systemowe gniazda (np. sieć niedostępna)
+            print(f"{Fore.RED}Błąd systemowy podczas wysyłania pakietu WoL: {e}{Style.RESET_ALL}")
+            return False
+        except Exception as e: # Inne nieoczekiwane błędy
+            print(f"{Fore.RED}Nieoczekiwany błąd podczas wysyłania pakietu WoL: {e}{Style.RESET_ALL}")
+            return False
+        
+def is_valid_mac(mac_address_str: str) -> bool:
+    """Sprawdza, czy ciąg znaków ma format adresu MAC (12 znaków heksadecymalnych)."""
+    mac_clean = re.sub(r'[^0-9a-fA-F]', '', mac_address_str)
+    return len(mac_clean) == 12
+
+def is_valid_ipv4(ip_str: str) -> bool:
+    """Sprawdza, czy ciąg znaków jest poprawnym adresem IPv4."""
+    try:
+        socket.inet_aton(ip_str)
+        return True
+    except socket.error:
+        return False
+
+def is_valid_port(port_str: str) -> bool:
+    """Sprawdza, czy ciąg znaków jest poprawnym numerem portu (1-65535)."""
+    try:
+        port = int(port_str)
+        return 1 <= port <= 65535
+    except ValueError:
+        return False
+
+def waliduj_i_przetworz_parametry_wol(wol_args: List[str]) -> Optional[Tuple[str, str, int]]:
+    """
+    Waliduje i przetwarza argumenty dla funkcji WoL.
+    W przypadku błędu, wyświetla instrukcję i pozwala na ponowne wprowadzenie.
+
+    Args:
+        wol_args: Lista argumentów podanych dla opcji -wol.
+                  Oczekiwane: [mac_address, (opcjonalnie)broadcast_ip, (opcjonalnie)port]
+
+    Returns:
+        Krotka (mac_address, broadcast_ip, port) jeśli walidacja się powiodła,
+        None jeśli użytkownik przerwał lub nie udało się sparsować.
+    """
+    mac_address: Optional[str] = None
+    broadcast_ip: str = "255.255.255.255"
+    port: int = 9
+
+    while True:
+        # Parsowanie argumentów
+        mac_address = None # Resetuj w każdej iteracji pętli
+        current_broadcast_ip = "255.255.255.255" # Resetuj
+        current_port = 9 # Resetuj
+        
+        # Walidacja liczby argumentów        
+        if not wol_args or len(wol_args) == 0:
+            print(f"{Fore.RED}Błąd: Brak adresu MAC dla opcji -wol.{Style.RESET_ALL}")
+
+        elif len(wol_args) > 3:
+             print(f"{Fore.YELLOW}Ostrzeżenie: Podano zbyt wiele argumentów dla -wol. Użyte zostaną pierwsze trzy.{Style.RESET_ALL}")
+             # Ogranicz listę argumentów do pierwszych trzech
+             wol_args = wol_args[:3]
+
+        # Próba parsowania i walidacji
+        if wol_args:
+            mac_address_candidate = wol_args[0]
+            if is_valid_mac(mac_address_candidate):
+                mac_address = mac_address_candidate # MAC jest poprawny
+            else:
+                print(f"{Fore.RED}Błąd: Nieprawidłowy format adresu MAC '{mac_address_candidate}'. Oczekiwano 12 znaków heksadecymalnych.{Style.RESET_ALL}")
+                mac_address = None # MAC niepoprawny
+
+            if len(wol_args) > 1 and mac_address: # Sprawdzaj IP tylko jeśli MAC jest poprawny
+                broadcast_ip_candidate = wol_args[1]
+                if is_valid_ipv4(broadcast_ip_candidate):
+                    current_broadcast_ip = broadcast_ip_candidate
+                else:
+                    print(f"{Fore.YELLOW}Ostrzeżenie: Nieprawidłowy format adresu IP broadcast '{broadcast_ip_candidate}'. Używam domyślnego '{broadcast_ip}'.{Style.RESET_ALL}")
+            
+            if len(wol_args) > 2 and mac_address: # Sprawdzaj port tylko jeśli MAC jest poprawny
+                port_candidate = wol_args[2]
+                if is_valid_port(port_candidate):
+                    current_port = int(port_candidate)
+                else:
+                    print(f"{Fore.YELLOW}Ostrzeżenie: Nieprawidłowy format numeru portu '{port_candidate}'. Używam domyślnego '{port}'.{Style.RESET_ALL}")
+
+        # Sprawdź, czy udało się uzyskać poprawny adres MAC
+        if mac_address:
+            # Zwróć poprawne parametry (użyj current_broadcast_ip i current_port, które mogły zostać nadpisane)
+            return mac_address, current_broadcast_ip, current_port 
+
+        # Jeśli doszliśmy tutaj, to znaczy, że był błąd z MAC lub brak argumentów
+        print(f"\n{Fore.YELLOW}Instrukcja użycia opcji -wol:{Style.RESET_ALL}")
+        print(f"  {Style.BRIGHT}python skaner_sieci.py -wol <MAC_ADDRESS> [BROADCAST_IP] [PORT]{Style.RESET_ALL}")
+        print(f"  Przykład: {Style.BRIGHT}python skaner_sieci.py -wol 00:1A:2B:3C:4D:5E{Style.RESET_ALL}")
+        print(f"  Przykład: {Style.BRIGHT}python skaner_sieci.py -wol 001A2B3C4D5E 192.168.1.255 7{Style.RESET_ALL}")
+        print(f"  Adres MAC jest wymagany. IP broadcast i port są opcjonalne.")
+        
+        try:
+            nowe_args_str = input(f"Podaj poprawne parametry WoL (MAC [IP_BROADCAST PORT]) lub ({Fore.LIGHTMAGENTA_EX}Ctrl+C{Style.RESET_ALL}) aby wyjść: ")
+            wol_args = shlex.split(nowe_args_str) # Użyj shlex do podziału jak w shellu
+        except (KeyboardInterrupt, EOFError):
+            obsluz_przerwanie_uzytkownika() # Ta funkcja zakończy skrypt
+            return None # Nie powinno być osiągnięte
 
 # --- Główna część skryptu ---
 if __name__ == "__main__":
@@ -3487,6 +3776,7 @@ if __name__ == "__main__":
         # Definiujemy unikalne wartości sentinelowe do wykrycia, czy flaga była podana bez argumentu
         SENTINEL_NO_VALUE_PREFIX = object()
         SENTINEL_NO_VALUE_MENU = object()
+        SENTINEL_NO_VALUE_WOL = object()
 
         parser.add_argument(
             "-p", "--prefix",
@@ -3504,7 +3794,34 @@ if __name__ == "__main__":
             type=str,      # Nadal oczekujemy stringa, jeśli argument jest podany
             help="Wybór opcji menu dla kolumn i raportu HTML (np. '17'). Pomija interaktywne menu."
         )
+        parser.add_argument(
+            "-wol", "--wake-on-lan",
+            nargs='+', # Akceptuje jeden lub więcej argumentów: MAC [BROADCAST_IP] [PORT]
+            # const=SENTINEL_NO_VALUE_WOL, # Niepotrzebne przy nargs='+'
+            # default=None, # Domyślne jeśli nie podano
+            metavar='MAC_ADDRESS', # Zmieniono metavar na pojedynczy string, aby pasował do nargs='+'
+            help="Wyślij pakiet Wake-on-LAN. Wymagany MAC_ADDRESS. Opcjonalnie BROADCAST_IP (domyślnie 255.255.255.255) i PORT (domyślnie 9)."
+        )
         args = parser.parse_args()
+
+                # --- Obsługa -wol ---
+        if args.wake_on_lan:
+            parametry_wol = waliduj_i_przetworz_parametry_wol(args.wake_on_lan)
+            if parametry_wol:
+                mac, broadcast, port_num = parametry_wol
+                if wyslij_wol_packet(mac, broadcast, port_num):
+                    # Komunikat już jest w wyslij_wol_packet, ale możemy dodać bardziej ogólny
+                    # print(f"Polecenie WoL dla {mac.upper()} zostało przetworzone.")
+                    pass # Komunikat jest już w funkcji wyslij_wol_packet
+                else:
+                    # print(f"Nie udało się wysłać pakietu WoL dla {mac.upper()}.")
+                    pass # Komunikat jest już w funkcji wyslij_wol_packet
+            else:
+                # Walidacja nie powiodła się, a użytkownik nie przerwał (co jest mało prawdopodobne z obsluz_przerwanie_uzytkownika)
+                # print(f"{Fore.RED}Anulowano operację Wake-on-LAN z powodu niepoprawnych parametrów.{Style.RESET_ALL}")
+                pass # Komunikat jest już w funkcji walidującej
+            sys.exit(0) # Zakończ skrypt po próbie WoL, niezależnie od wyniku
+        
         # --- Koniec parsowania argumentów ---
 
         # Zamiast bezpośredniego wywołania sys.exit(0) w zainstaluj_pakiet,
@@ -3580,7 +3897,7 @@ if __name__ == "__main__":
             sys.exit(1) # Zakończ skrypt, jeśli prefiks nie został ustalony
 
         # Pobierz bazę OUI (użyj poprawionej funkcji z cache)
-        print("\nPobieranie/ładowanie bazy OUI...")
+        print("Pobieranie/ładowanie bazy OUI...")
         baza_oui = pobierz_baze_oui(url=OUI_URL, plik_lokalny=OUI_LOCAL_FILE, timeout=REQUESTS_TIMEOUT, aktualizacja_co=OUI_UPDATE_INTERVAL)
         if not baza_oui:
             print(f"{Fore.YELLOW}OSTRZEŻENIE: Nie udało się załadować bazy OUI. Nazwy producentów nie będą dostępne.{Style.RESET_ALL}")
@@ -3700,7 +4017,7 @@ if __name__ == "__main__":
         else:
             print(f"{Fore.YELLOW}Pominięto generowanie raportu HTML, ponieważ nie znaleziono żadnych urządzeń.{Style.RESET_ALL}")
        
-        wyswietl_tekst_w_linii("-",DEFAULT_LINE_WIDTH,"Skanowanie zakończone. Przewiń wyżej, aby zobaczyć wyniki.",Fore.LIGHTCYAN_EX,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
+        wyswietl_tekst_w_linii("-",DEFAULT_LINE_WIDTH,"Skanowanie zakończone. Przewiń wyżej, aby zobaczyć wszystkie informacje.",Fore.LIGHTCYAN_EX,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
     except KeyboardInterrupt:
         obsluz_przerwanie_uzytkownika()
         sys.exit(0)
