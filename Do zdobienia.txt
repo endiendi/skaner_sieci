@@ -1,0 +1,4 @@
+Czy można wydzielić z bloku main blok odpowiadający za skanowanie?
+
+Sprawdż czy wgenerowana strona raportu nie zawiera błędów.
+
