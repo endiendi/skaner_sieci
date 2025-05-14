@@ -78,9 +78,9 @@ W ramach nauki programowania — bardziej kopiuj-wklej i research w sieci oraz n
     -m 7 lub 0 wyświetli wszystkie kolumny.
 
     Wybudzanie urządzeń wake-on-lan
-
+    ```bash
     python skaner_sieci.py -wol 00:1A:2B:3C:4D:5E
-
+    ```
     ```bash
     python skaner_sieci.py --wake-on-lan 001A2B3C4D5E
     ```
