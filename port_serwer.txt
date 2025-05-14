@@ -1,16 +1,16 @@
 # Przykładowy plik z niestandardowymi portami dla serwerów HTTP/HTTPS
 # Linie zaczynające się od '#' są ignorowane.
 [https]
-443
-8001
+443 Serwer webowy https
+8001 Synology NAS
 8443
-32400
 [http]
-80
-8000
+80 Serwer webowy http
+8000 Synology NAS
 8123
 13378
 8096
 8989
 8080
 4357
+32400 Plex
