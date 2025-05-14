@@ -355,7 +355,7 @@ OS_FILTERS: List[Dict[str, Any]] = [
     {
         "id": "NAS_MULTIMEDIA",
         "ports_any": set(),
-        "ports_all": {22, 80, 139, 445, 8000, 8001, 8080, 8096, 32400},
+        "ports_all": {22, 80, 139, 445, 8000, 8001, 8080, 8096},
         "priority": 8 # Bardzo wysoki priorytet ze względu na specyficzność
     },
     {
@@ -1862,6 +1862,49 @@ def polacz_listy_ip(
     # print(f"Połączono i usunięto duplikaty. Łączna liczba unikalnych adresów IP: {len(unikalne_ip_lista)}")
     return final_ip_list
 
+def zintegruj_niestandardowe_porty_z_opisami(
+    standardowe_opisy: Dict[int, str],
+    niestandardowe_mapa: Dict[str, Dict[int, Optional[str]]]
+) -> None:
+    """
+    Integruje niestandardowe porty z pliku port_serwer.txt z globalnym słownikiem OPISY_PORTOW.
+    Jeśli port niestandardowy nie istnieje w OPISY_PORTOW, zostanie dodany z domyślnym opisem.
+    Nie nadpisuje istniejących opisów dla portów standardowych.
+
+    Args:
+        standardowe_opisy: Globalny słownik OPISY_PORTOW (modyfikowany w miejscu).
+        niestandardowe_mapa: Słownik wczytany z pliku port_serwer.txt.
+    """
+    liczba_nowo_dodanych_portow = 0
+    liczba_nadpisanych_opisow = 0
+
+    for typ_protokolu, porty_z_opisami in niestandardowe_mapa.items():
+        for port, opis_z_pliku in porty_z_opisami.items():
+            if opis_z_pliku:  # Jeśli plik dostarcza opis
+                # Sprawdź, czy port istnieje i czy opis jest inny, aby policzyć nadpisania
+                if port in standardowe_opisy and standardowe_opisy[port] != opis_z_pliku:
+                    liczba_nadpisanych_opisow += 1
+                elif port not in standardowe_opisy: # Jeśli portu nie było, to jest nowy
+                    liczba_nowo_dodanych_portow += 1
+                standardowe_opisy[port] = opis_z_pliku  # Nadpisz lub dodaj z opisem z pliku
+            else:  # Jeśli plik NIE dostarcza opisu (opis_z_pliku is None)
+                if port not in standardowe_opisy:  # A portu nie ma w standardowych
+
+                    standardowe_opisy[port] = f"Niestandardowy {typ_protokolu.upper()} (z pliku port_serwer.txt)"
+                    liczba_nowo_dodanych_portow += 1
+                # Jeśli port jest w standardowych, a plik nie ma opisu, nic nie rób - zachowaj standardowy opis
+    
+    if liczba_nowo_dodanych_portow > 0:
+        print(f"{Fore.CYAN}Dodano {liczba_nowo_dodanych_portow} nowych portów do globalnej listy skanowania (z pliku port_serwer.txt).{Style.RESET_ALL}")
+    if liczba_nadpisanych_opisow > 0:
+        print(f"{Fore.CYAN}Nadpisano opisy dla {liczba_nadpisanych_opisow} istniejących portów na podstawie pliku port_serwer.txt.{Style.RESET_ALL}")
+    
+    # Opcjonalny komunikat, jeśli plik został przetworzony, ale nic się nie zmieniło
+    if liczba_nowo_dodanych_portow == 0 and liczba_nadpisanych_opisow == 0 and any(niestandardowe_mapa.values()):
+        print(f"{Fore.CYAN}Przetworzono plik port_serwer.txt, ale nie dodano nowych portów ani nie nadpisano istniejących opisów (mogą być już zgodne).{Style.RESET_ALL}")
+    # OPISY_PORTOW są modyfikowane w miejscu, więc nie trzeba nic zwracać.
+
+
 def skanuj_porty_rownolegle(
     ips_do_skanowania: List[str],
     max_host_workers: int = MAX_HOSTNAME_WORKERS # Użyj tej samej stałej co dla nazw/OS
@@ -1881,7 +1924,7 @@ def skanuj_porty_rownolegle(
         print("\nBrak aktywnych hostów do skanowania portów.")
         return wyniki_skanowania
 
-    print(f"\nSkanowanie wybranych portów dla {len(ips_do_skanowania)} aktywnych hostów...")
+    print(f"\nSkanowanie wybranych portów dla {len(ips_do_skanowania)} aktywnych hostów (w tym niestandardowych z pliku)...")
     try:
         actual_workers = min(max_host_workers, len(ips_do_skanowania))
         if actual_workers <= 0: actual_workers = 1
@@ -2587,7 +2630,6 @@ def pobierz_i_zweryfikuj_prefiks(cmd_prefix: Optional[str] = None) -> Optional[s
 
     return potwierdzony_prefiks
 
-
 def agreguj_informacje_o_urzadzeniach(
     lista_ip_do_przetworzenia: List[str],
     arp_map: Dict[str, str],
@@ -2603,7 +2645,7 @@ def agreguj_informacje_o_urzadzeniach(
     configured_custom_server_ports_map: Dict[str, List[int]] # Zmieniono z List[int] na Dict[str, List[int]]
 ) -> Union[List[DeviceInfo], Literal[False]]:
     """Agreguje zebrane informacje o urządzeniach w listę obiektów DeviceInfo."""
-    lista_urzadzen: List[DeviceInfo] = []
+    lista_urzadzen: List[DeviceInfo] = [] # type: ignore
     print("Agregowanie informacji o urządzeniach...")
 
     for ip in lista_ip_do_przetworzenia:
@@ -2643,8 +2685,9 @@ def agreguj_informacje_o_urzadzeniach(
         open_custom_ports_on_device_for_this_ip: List[int] = []
         all_configured_custom_ports_set = set()
         if configured_custom_server_ports_map:
-            for proto_ports in configured_custom_server_ports_map.values():
-                all_configured_custom_ports_set.update(proto_ports)
+            for proto_ports_with_desc in configured_custom_server_ports_map.values(): # type: ignore
+                all_configured_custom_ports_set.update(proto_ports_with_desc.keys()) # type: ignore
+
         
         if all_configured_custom_ports_set:
             open_custom_ports_on_device_for_this_ip = [
@@ -2892,24 +2935,31 @@ FF:FF:FF:FF:FF:FF PrzykładowaNazwa"""
 
     return mac_nazwy_map
 
-def wczytaj_niestandardowe_porty_serwera(nazwa_pliku: str = NIESTANDARDOWE_PORTY_SERWERA_PLIK) -> Dict[str, List[int]]:
+def wczytaj_niestandardowe_porty_serwera(nazwa_pliku: str = NIESTANDARDOWE_PORTY_SERWERA_PLIK) -> Dict[str, Dict[int, Optional[str]]]:
     """
-    Wczytuje listę niestandardowych portów serwera (HTTP/HTTPS) z pliku.
+    Wczytuje listę niestandardowych portów serwera (HTTP/HTTPS) z pliku,
+    wraz z ich opcjonalnymi opisami. Zwraca słownik mapujący typ protokołu
+    na słownik {numer_portu: opis_portu_lub_None}.
+
     Plik powinien znajdować się w tej samej lokalizacji co skrypt.
-    Format: sekcje [http] lub [https], a pod nimi numery portów.
+    niestandardowe_porty_map: Dict[str, Dict[int, Optional[str]]] = {"http": {}, "https": {}}
     Linie zaczynające się od '#' są ignorowane jako komentarze.
     """
-    niestandardowe_porty_map: Dict[str, List[int]] = {"http": [], "https": []}
+    niestandardowe_porty_map: Dict[str, Dict[int, Optional[str]]] = {"http": {}, "https": {}}
     script_dir = os.path.dirname(os.path.abspath(__file__))
     plik_path = os.path.join(script_dir, nazwa_pliku)
 
     # Domyślna treść dla pliku port_serwer.txt
-    domyslna_tresc_port_serwer = """# Przykładowy plik z niestandardowymi portami dla serwerów HTTP/HTTPS
+    domyslna_tresc_port_serwer = """# Przykładowy plik z niestandardowymi portami dla serwerów HTTP/HTTPS.
 # Linie zaczynające się od '#' są ignorowane.
+# Format: NUMER_PORTU [OPIS PORTU]
 [http]
-80
+80 Serwer HTTP
+8080 Alternatywny serwer HTTP
 [https]
-443"""
+443 Serwer HTTPS
+8443 Alternatywny serwer HTTPS"""
+
     # Najpierw sprawdź/utwórz plik z domyślną treścią, jeśli nie istnieje
     sprawdz_i_utworz_plik(nazwa_pliku, domyslna_tresc_port_serwer)
 
@@ -2938,27 +2988,35 @@ def wczytaj_niestandardowe_porty_serwera(nazwa_pliku: str = NIESTANDARDOWE_PORTY
 
                 if current_section:
                     try:
-                        port = int(line)
+                        parts = line.split(maxsplit=1)
+                        port_str = parts[0]
+                        opis_portu = parts[1].strip() if len(parts) > 1 else None
+
+                        port = int(port_str)
                         if 1 <= port <= 65535:
-                            if port not in niestandardowe_porty_map[current_section]: # Unikaj duplikatów w danej sekcji
-                                niestandardowe_porty_map[current_section].append(port)
+                            if port not in niestandardowe_porty_map[current_section]:
+                                niestandardowe_porty_map[current_section][port] = opis_portu
+                            elif niestandardowe_porty_map[current_section][port] is None and opis_portu:
+                                # Jeśli port już istnieje bez opisu, a teraz mamy opis, zaktualizuj
+                                niestandardowe_porty_map[current_section][port] = opis_portu
+                                print(f"{Fore.CYAN}Info w '{nazwa_pliku}' (linia {line_num}): Zaktualizowano opis dla portu {port} w sekcji '{current_section}'.{Style.RESET_ALL}")
                         else:
                             print(f"{Fore.YELLOW}Ostrzeżenie w '{nazwa_pliku}' (linia {line_num}): Port '{port}' jest poza prawidłowym zakresem (1-65535) w sekcji '{current_section}'. Pomijanie.{Style.RESET_ALL}")
                     except ValueError:
-                        print(f"{Fore.YELLOW}Ostrzeżenie w '{nazwa_pliku}' (linia {line_num}): Nie udało się sparsować numeru portu '{line}' w sekcji '{current_section}'. Pomijanie.{Style.RESET_ALL}")
+                        print(f"{Fore.YELLOW}Ostrzeżenie w '{nazwa_pliku}' (linia {line_num}): Nie udało się sparsować numeru portu z '{line.split()[0]}' w sekcji '{current_section}'. Pomijanie.{Style.RESET_ALL}")
                 else:
                     print(f"{Fore.YELLOW}Ostrzeżenie w '{nazwa_pliku}' (linia {line_num}): Port '{line}' znaleziony poza sekcją [http] lub [https]. Pomijanie.{Style.RESET_ALL}")
   
 
-        total_ports_loaded = len(niestandardowe_porty_map["http"]) + len(niestandardowe_porty_map["https"])
+        total_ports_loaded = sum(len(ports_dict) for ports_dict in niestandardowe_porty_map.values())
         if total_ports_loaded > 0:
             print(f"{Fore.GREEN}Pomyślnie wczytano {total_ports_loaded} niestandardowych portów serwera.{Style.RESET_ALL}")
             if niestandardowe_porty_map["http"]:
-                niestandardowe_porty_map["http"].sort()
-                print(f"  HTTP porty: {niestandardowe_porty_map['http']}")
+                http_ports_str = ", ".join(map(str, sorted(niestandardowe_porty_map["http"].keys())))
+                print(f"  HTTP porty: {http_ports_str}")
             if niestandardowe_porty_map["https"]:
-                niestandardowe_porty_map["https"].sort()
-                print(f"  HTTPS porty: {niestandardowe_porty_map['https']}")
+                https_ports_str = ", ".join(map(str, sorted(niestandardowe_porty_map["https"].keys())))
+                print(f"  HTTPS porty: {https_ports_str}")
         else:
             print(f"{Fore.YELLOW}Nie wczytano żadnych niestandardowych portów serwera z pliku '{nazwa_pliku}'.{Style.RESET_ALL}")
 
@@ -3043,7 +3101,7 @@ def zapisz_tabele_urzadzen_do_html(
     lista_urzadzen: List[DeviceInfo],
     kolumny_do_wyswietlenia: List[str],
     opisy_portow_globalne: Dict[int, str],
-    configured_custom_server_ports_map: Dict[str, List[int]],
+    configured_custom_server_ports_map: Dict[str, Dict[int, Optional[str]]],
     nazwa_pliku_html: str = DOMYSLNA_NAZWA_PLIKU_HTML_BAZOWA, # Użyj globalnej stałej
     siec_prefix: Optional[str] = None # Opcjonalny prefiks sieci do dodania do nazwy pliku
 ) -> Optional[str]: # Zmieniono typ zwracany na Optional[str]
@@ -3175,13 +3233,18 @@ def zapisz_tabele_urzadzen_do_html(
             for port_num in sorted(list(device.open_ports)):
                 port_display_str = str(port_num)
                 if port_num in device.open_custom_server_ports: 
-                    protocol = "http"
-                    if configured_custom_server_ports_map.get("https") and port_num in configured_custom_server_ports_map["https"]:
+                    protocol = "http" # Domyślnie http
+                    if configured_custom_server_ports_map.get("https") and port_num in configured_custom_server_ports_map["https"]: # type: ignore
                         protocol = "https"
-                    elif configured_custom_server_ports_map.get("http") and port_num in configured_custom_server_ports_map["http"]:
+                    elif configured_custom_server_ports_map.get("http") and port_num in configured_custom_server_ports_map["http"]: # type: ignore
                         protocol = "http"
+                                            
+                    opis_portu = opisy_portow_globalne.get(port_num)
+                    title_text = f"Otwórz aplikację webową na porcie {port_num}." # Domyślny tekst
+                    if opis_portu:
+                        title_text = f"Otwórz aplikację webową (Usługa: {html.escape(opis_portu)})"
                     link_href = f"{protocol}://{html.escape(device.ip)}:{port_num}"
-                    port_display_str = f'<a href="{link_href}" target="_blank" " title="Otwórz aplikacje webową na tym porcie." >{port_num}</a>'
+                    port_display_str = f'<a href="{link_href}" target="_blank" title="{title_text}" >{port_num}</a>'
                 open_ports_html_parts.append(port_display_str)
         porty_html_output = ', '.join(open_ports_html_parts) if open_ports_html_parts else ""
 
@@ -3689,79 +3752,102 @@ def is_valid_port(port_str: str) -> bool:
     except ValueError:
         return False
 
-def waliduj_i_przetworz_parametry_wol(wol_args: List[str]) -> Optional[Tuple[str, str, int]]:
+def waliduj_i_przetworz_parametry_wol(wol_args_input: List[str]) -> Optional[Tuple[str, str, int]]:
     """
     Waliduje i przetwarza argumenty dla funkcji WoL.
     W przypadku błędu, wyświetla instrukcję i pozwala na ponowne wprowadzenie.
 
     Args:
-        wol_args: Lista argumentów podanych dla opcji -wol.
-                  Oczekiwane: [mac_address, (opcjonalnie)broadcast_ip, (opcjonalnie)port]
+        wol_args_input: Lista argumentów podanych dla opcji -wol.
+                        Oczekiwane formaty:
+                        - [mac]
+                        - [mac, port]
+                        - [mac, ip_broadcast]
+                        - [mac, ip_broadcast, port]
 
     Returns:
         Krotka (mac_address, broadcast_ip, port) jeśli walidacja się powiodła,
         None jeśli użytkownik przerwał lub nie udało się sparsować.
     """
-    mac_address: Optional[str] = None
-    broadcast_ip: str = "255.255.255.255"
-    port: int = 9
+    # Utwórz kopię listy, aby uniknąć modyfikacji oryginalnej listy z argparse
+    wol_args = list(wol_args_input)
 
     while True:
-        # Parsowanie argumentów
-        mac_address = None # Resetuj w każdej iteracji pętli
-        current_broadcast_ip = "255.255.255.255" # Resetuj
-        current_port = 9 # Resetuj
-        
-        # Walidacja liczby argumentów        
+        mac_to_return: Optional[str] = None
+        ip_to_return: str = "255.255.255.255"  # Domyślny IP broadcast
+        port_to_return: int = 9               # Domyślny port
+        valid_parse = False
+      
         if not wol_args or len(wol_args) == 0:
             print(f"{Fore.RED}Błąd: Brak adresu MAC dla opcji -wol.{Style.RESET_ALL}")
 
         elif len(wol_args) > 3:
-             print(f"{Fore.YELLOW}Ostrzeżenie: Podano zbyt wiele argumentów dla -wol. Użyte zostaną pierwsze trzy.{Style.RESET_ALL}")
-             # Ogranicz listę argumentów do pierwszych trzech
-             wol_args = wol_args[:3]
+            print(f"{Fore.YELLOW}Ostrzeżenie: Podano zbyt wiele argumentów dla -wol. Użyte zostaną pierwsze trzy.{Style.RESET_ALL}")
+            wol_args = wol_args[:3] # Rozważ tylko pierwsze trzy
 
-        # Próba parsowania i walidacji
-        if wol_args:
+        if wol_args: # Sprawdź ponownie po potencjalnym przycięciu
             mac_address_candidate = wol_args[0]
-            if is_valid_mac(mac_address_candidate):
-                mac_address = mac_address_candidate # MAC jest poprawny
-            else:
+            if not is_valid_mac(mac_address_candidate):
                 print(f"{Fore.RED}Błąd: Nieprawidłowy format adresu MAC '{mac_address_candidate}'. Oczekiwano 12 znaków heksadecymalnych.{Style.RESET_ALL}")
-                mac_address = None # MAC niepoprawny
+                # mac_to_return pozostaje None
+            else:
+                mac_to_return = mac_address_candidate # MAC jest wstępnie poprawny
 
-            if len(wol_args) > 1 and mac_address: # Sprawdzaj IP tylko jeśli MAC jest poprawny
-                broadcast_ip_candidate = wol_args[1]
-                if is_valid_ipv4(broadcast_ip_candidate):
-                    current_broadcast_ip = broadcast_ip_candidate
-                else:
-                    print(f"{Fore.YELLOW}Ostrzeżenie: Nieprawidłowy format adresu IP broadcast '{broadcast_ip_candidate}'. Używam domyślnego '{broadcast_ip}'.{Style.RESET_ALL}")
-            
-            if len(wol_args) > 2 and mac_address: # Sprawdzaj port tylko jeśli MAC jest poprawny
-                port_candidate = wol_args[2]
-                if is_valid_port(port_candidate):
-                    current_port = int(port_candidate)
-                else:
-                    print(f"{Fore.YELLOW}Ostrzeżenie: Nieprawidłowy format numeru portu '{port_candidate}'. Używam domyślnego '{port}'.{Style.RESET_ALL}")
+                if len(wol_args) == 1: # Tylko MAC
+                    valid_parse = True
+                
+                elif len(wol_args) == 2:
+                    second_arg = wol_args[1]
+                    if is_valid_port(second_arg): # Przypadek: MAC PORT
+                        port_to_return = int(second_arg)
+                        # ip_to_return pozostaje domyślny
+                        valid_parse = True
+                    elif is_valid_ipv4(second_arg): # Przypadek: MAC IP_BROADCAST
+                        ip_to_return = second_arg
+                        # port_to_return pozostaje domyślny
+                        valid_parse = True
+                    else:
+                        print(f"{Fore.RED}Błąd: Drugi argument '{second_arg}' nie jest ani prawidłowym adresem IP broadcast, ani numerem portu.{Style.RESET_ALL}")
+                        mac_to_return = None # Unieważnij, bo parsowanie niekompletne
 
-        # Sprawdź, czy udało się uzyskać poprawny adres MAC
-        if mac_address:
-            # Zwróć poprawne parametry (użyj current_broadcast_ip i current_port, które mogły zostać nadpisane)
-            return mac_address, current_broadcast_ip, current_port 
+                elif len(wol_args) == 3: # Przypadek: MAC IP_BROADCAST PORT
+                    ip_candidate = wol_args[1]
+                    port_candidate = wol_args[2]
+                    
+                    ip_ok = is_valid_ipv4(ip_candidate)
+                    port_ok = is_valid_port(port_candidate)
 
-        # Jeśli doszliśmy tutaj, to znaczy, że był błąd z MAC lub brak argumentów
+                    if ip_ok and port_ok:
+                        ip_to_return = ip_candidate
+                        port_to_return = int(port_candidate)
+                        valid_parse = True
+                    else:
+                        if not ip_ok:
+                            print(f"{Fore.RED}Błąd: Nieprawidłowy format adresu IP broadcast '{ip_candidate}'.{Style.RESET_ALL}")
+                        if not port_ok:
+                            print(f"{Fore.RED}Błąd: Nieprawidłowy format numeru portu '{port_candidate}'.{Style.RESET_ALL}")
+                        mac_to_return = None # Unieważnij
+        
+        if valid_parse and mac_to_return:
+            return mac_to_return, ip_to_return, port_to_return
+
+        # Jeśli doszliśmy tutaj, parsowanie się nie powiodło lub brakowało argumentów
         print(f"\n{Fore.YELLOW}Instrukcja użycia opcji -wol:{Style.RESET_ALL}")
-        print(f"  {Style.BRIGHT}python skaner_sieci.py -wol <MAC_ADDRESS> [BROADCAST_IP] [PORT]{Style.RESET_ALL}")
-        print(f"  Przykład: {Style.BRIGHT}python skaner_sieci.py -wol 00:1A:2B:3C:4D:5E{Style.RESET_ALL}")
-        print(f"  Przykład: {Style.BRIGHT}python skaner_sieci.py -wol 001A2B3C4D5E 192.168.1.255 7{Style.RESET_ALL}")
-        print(f"  Adres MAC jest wymagany. IP broadcast i port są opcjonalne.")
+        script_name = os.path.basename(__file__)
+        print(f"  {Style.BRIGHT}python {script_name} -wol <MAC_ADDRESS> [BROADCAST_IP] [PORT]{Style.RESET_ALL}")
+        print(f"  {Style.BRIGHT}python {script_name} -wol <MAC_ADDRESS> [PORT]{Style.RESET_ALL} (użyje domyślnego IP broadcast: {ip_to_return})")
+        print(f"  Przykład 1: {Style.BRIGHT}python {script_name} -wol 00:1A:2B:3C:4D:5E{Style.RESET_ALL}")
+        print(f"  Przykład 2: {Style.BRIGHT}python {script_name} -wol 001A2B3C4D5E 7{Style.RESET_ALL} (MAC i port, domyślny IP)")
+        print(f"  Przykład 3: {Style.BRIGHT}python {script_name} -wol 00-1A-2B-3C-4D-5E 192.168.1.255 7{Style.RESET_ALL} (MAC, IP, port)")
+        print(f"  Adres MAC jest wymagany. Domyślny IP broadcast: {ip_to_return}, domyślny port: {port_to_return}.")
         
         try:
-            nowe_args_str = input(f"Podaj poprawne parametry WoL (MAC [IP_BROADCAST PORT]) lub ({Fore.LIGHTMAGENTA_EX}Ctrl+C{Style.RESET_ALL}) aby wyjść: ")
-            wol_args = shlex.split(nowe_args_str) # Użyj shlex do podziału jak w shellu
+            nowe_args_str = input(f"Podaj poprawne parametry WoL (MAC [IP PORT] lub MAC [PORT]) lub ({Fore.LIGHTMAGENTA_EX}Ctrl+C{Style.RESET_ALL}) aby wyjść: ")
+            wol_args = shlex.split(nowe_args_str) # Podziel string na listę argumentów
         except (KeyboardInterrupt, EOFError):
-            obsluz_przerwanie_uzytkownika() # Ta funkcja zakończy skrypt
-            return None # Nie powinno być osiągnięte
+            obsluz_przerwanie_uzytkownika() 
+            return None # Nie powinno być osiągnięte, bo obsluz_przerwanie_uzytkownika kończy skrypt
+
 
 # --- Główna część skryptu ---
 if __name__ == "__main__":
@@ -3800,7 +3886,7 @@ if __name__ == "__main__":
             # const=SENTINEL_NO_VALUE_WOL, # Niepotrzebne przy nargs='+'
             # default=None, # Domyślne jeśli nie podano
             metavar='MAC_ADDRESS', # Zmieniono metavar na pojedynczy string, aby pasował do nargs='+'
-            help="Wyślij pakiet Wake-on-LAN. Wymagany MAC_ADDRESS. Opcjonalnie BROADCAST_IP (domyślnie 255.255.255.255) i PORT (domyślnie 9)."
+            help="Wyślij pakiet Wake-on-LAN. Wymagany MAC_ADDRESS. Opcjonalnie: [BROADCAST_IP PORT] lub [PORT] (użyje domyślnego IP). Domyślne IP: 255.255.255.255, Port: 9."
         )
         args = parser.parse_args()
 
@@ -3905,6 +3991,10 @@ if __name__ == "__main__":
         mac_nazwy_niestandardowe = wczytaj_mac_nazwy_z_pliku()
 
         niestandardowe_porty_serwera_mapa = wczytaj_niestandardowe_porty_serwera() # Zmieniona nazwa zmiennej
+        
+        # --- INTEGRACJA NIESTANDARDOWYCH PORTÓW Z OPISAMI ---
+        zintegruj_niestandardowe_porty_z_opisami(OPISY_PORTOW, niestandardowe_porty_serwera_mapa)
+        # --- KONIEC INTEGRACJI ---
         # Skanowanie sieci
         print("\nRozpoczynanie skanowania sieci (ping)...")
         start_arp_time = time.time() # Przesunięto start timera tutaj
@@ -3914,9 +4004,7 @@ if __name__ == "__main__":
         adresy_ip_z_arp = pobierz_ip_z_arp(siec_prefix)
         # polaczona_lista_ip = polacz_listy_ip(adresy_ip_z_arp, hosty_ktore_odpowiedzialy)
         final_ip_list_do_przetworzenia = polacz_listy_ip(adresy_ip_z_arp, hosty_ktore_odpowiedzialy, host_ip, gateway_ip, siec_prefix)
-        # --- SKANOWANIE PORTÓW (NOWY KROK) ---
         wyniki_skanowania_portow = skanuj_porty_rownolegle(final_ip_list_do_przetworzenia)
-        # --- KONIEC SKANOWANIA PORTÓW ---
         nazwy_hostow_cache = pobierz_nazwy_hostow_rownolegle(final_ip_list_do_przetworzenia)
 
         os_cache_wyniki = zgadnij_systemy_rownolegle(final_ip_list_do_przetworzenia, wyniki_skanowania_portow)      
