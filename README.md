@@ -79,16 +79,16 @@ W ramach nauki programowania — bardziej kopiuj-wklej i research w sieci oraz n
 
     Wybudzanie urządzeń wake-on-lan
     ```bash
-    python skaner_sieci.py -wol 00:1A:2B:3C:4D:5E
+    python skaner_sieci.py -wol 00:85:2B:3C:3G:5E
     ```
     ```bash
     python skaner_sieci.py --wake-on-lan 001A2B3C4D5E
     ```
     ```bash
-    python skaner_sieci.py -wol 00:1A:2B:3C:4D:5E 192.168.1.255
+    python skaner_sieci.py -wol 00:85:2B:3C:3G:5E 192.168.1.255
     ```
     ```bash
-    python skaner_sieci.py -wol 00:1A:2B:3C:4D:5E 192.168.1.255 7
+    python skaner_sieci.py -wol 00:85:2B:3C:3G:5E 192.168.1.255 7
     ```
      
 4.  Skrypt spróbuje wykryć prefiks sieciowy. Zostaniesz zapytany, czy jest on poprawny. Możesz nacisnąć Enter, aby go zaakceptować, podać inny prefiks (np. `10.0.0.`) lub przerwać działanie (Ctrl+C).
