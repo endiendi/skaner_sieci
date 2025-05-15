@@ -23,7 +23,7 @@ W ramach nauki programowania — bardziej kopiuj-wklej i research w sieci oraz n
 *   **Automatyczna instalacja zależności:** Próbuje automatycznie zainstalować brakujące biblioteki (`colorama`, `psutil`, `requests`) za pomocą `pip`.
 *   **Wsparcie dla wielu platform:** Działa w systemach Windows, Linux i macOS (wykorzystując odpowiednie polecenia systemowe).
 *   **Argumenty linii poleceń:** Umożliwia modyfikację zachowania skryptu, np. podanie prefiksu sieci, pominięcie pingowania, rozwiązywania nazw hostów, skanowania portów czy zgadywania OS.
-*   **Zapisywanie konfiguracji użytkownika:** Zapamiętuje ostatnio użyty prefiks sieci oraz wybrane kolumny do wyświetlenia w konsoli w pliku `config.json`.
+*   **Zapisywanie konfiguracji użytkownika:** Zapamiętuje ostatnio użyty prefiks sieci oraz wybrane kolumny do wyświetlenia w konsoli w pliku `config.json`. Na razie jeszcze nie działa. :-(
 *   **Interaktywny wybór kolumn:** Pozwala użytkownikowi wybrać, które kolumny mają być wyświetlane w tabeli w konsoli.
 *   **Wyświetlanie czasu skanowania:** Informuje o całkowitym czasie trwania skanowania.
 
