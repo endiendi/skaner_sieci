@@ -3593,10 +3593,7 @@ def zapisz_tabele_urzadzen_do_html(
         </ul>
     </div>
 """    
-    # Dodaj sekcję informacyjną o plikach konfiguracyjnych PO legendach
-    html_content += informacje_o_plikach_html
-    """
-    <div id="wolModal" class="wol-modal">
+    html_content += """    <div id="wolModal" class="wol-modal">
         <div class="wol-modal-content">
             <span class="wol-modal-close" onclick="closeWolModal()">&times;</span>
             <h2>Wyślij Pakiet Wake-on-LAN</h2>
@@ -3608,7 +3605,11 @@ def zapisz_tabele_urzadzen_do_html(
         </div>
     </div>
 
-    <script>
+"""
+    # Dodaj sekcję informacyjną o plikach konfiguracyjnych PO modalu WoL, a PRZED skryptem JS
+    html_content += informacje_o_plikach_html
+    html_content += """    <script>
+
         const displayedColumns = """ + kolumny_do_wyswietlenia_json + """;
         let currentSortKey = null;
         let currentSortDirection = 'none'; // 'asc', 'desc', 'none'
@@ -3630,13 +3631,18 @@ def zapisz_tabele_urzadzen_do_html(
             return cellText;
         }
 
-        function compareIpAddresses(ipA, ipB) {
+        function compareIpAddresses(ipA_str, ipB_str) {
+            // Dodatkowe zabezpieczenie przed wartościami, które nie są stringami lub są puste
+            const ipA = String(ipA_str || '').trim();
+            const ipB = String(ipB_str || '').trim();
+
+            if (!ipA && !ipB) return 0;
+            if (!ipA) return 1; // Puste/null na końcu
+            if (!ipB) return -1; // Puste/null na końcu
+
             const partsA = ipA.split('.').map(Number);
             const partsB = ipB.split('.').map(Number);
             for (let i = 0; i < 4; i++) {
-                if (isNaN(partsA[i]) && isNaN(partsB[i])) continue;
-                if (isNaN(partsA[i])) return 1; // Traktuj NaN jako większe
-                if (isNaN(partsB[i])) return -1; // Traktuj NaN jako większe
 
                 if (partsA[i] < partsB[i]) return -1;
                 if (partsA[i] > partsB[i]) return 1;
@@ -3644,14 +3650,35 @@ def zapisz_tabele_urzadzen_do_html(
             return 0;
         }
 
-        function compareValues(key, order, rowA, rowB) {
+       function compareValues(key, order, rowA, rowB) {
             const valA = getCellContentForSort(rowA, key);
             const valB = getCellContentForSort(rowB, key);
 
             let comparison = 0;
             if (key === 'ip') {
                 comparison = compareIpAddresses(valA, valB);
-            } else {
+
+            } else if (key === 'porty') {
+                const getFirstPort = (s) => {
+                    if (!s || typeof s !== 'string') return NaN;
+                    const parts = s.split(',');
+                    return parseInt(parts[0], 10);
+                };
+                const firstPortA = getFirstPort(valA);
+                const firstPortB = getFirstPort(valB);
+
+                if (!isNaN(firstPortA) && isNaN(firstPortB)) comparison = -1;
+                else if (isNaN(firstPortA) && !isNaN(firstPortB)) comparison = 1;
+                else if (!isNaN(firstPortA) && !isNaN(firstPortB)) {
+                    if (firstPortA < firstPortB) comparison = -1;
+                    if (firstPortA > firstPortB) comparison = 1;
+                }
+                
+                if (comparison === 0) { // Jeśli pierwsze porty równe lub oba NaN, sortuj alfabetycznie całą listę
+                    if (valA.toLowerCase() < valB.toLowerCase()) comparison = -1;
+                    if (valA.toLowerCase() > valB.toLowerCase()) comparison = 1;
+                }
+            }  else {
                 const specialValues = ["Nieznana", "Błąd", "Nieznany MAC", "Nieznany OS"];
                 // Sprawdź, czy wartość ZACZYNA SIĘ od specjalnej wartości (np. "Nieznana (Ty)")
                 const isASpecial = specialValues.some(sv => valA.startsWith(sv));
