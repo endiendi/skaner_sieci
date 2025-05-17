@@ -3,5 +3,5 @@
   "name": "skaner_sieci",
   "description": "Skaner sieci komputerowej",
   "download_url": "https://raw.githubusercontent.com/endiendi/skaner_sieci/refs/heads/main/skaner_sieci.py",
-  "changelog": "Dodano wywoływanie skrypty z prametrem -p i -m dokładny opis w readme, poprawiono błąd Y."
+  "changelog": "Dodano zapis konfiguracji menu."
 }

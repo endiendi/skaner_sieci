@@ -406,7 +406,6 @@ OS_DEFINITIONS: Dict[str, Dict[str, str]] = {
     # --- Uzupełnij o wszystkie ID używane w OS_FILTERS ---
 }
 
-
 OS_ABBREVIATIONS: Dict[str, str] = {
     key: definition["abbr"] for key, definition in OS_DEFINITIONS.items()
 }

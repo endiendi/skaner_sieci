@@ -127,7 +127,7 @@ Skrypt wykorzystuje również zewnętrzne pliki tekstowe (umieszczone w tym samy
 
 *   **`mac_nazwy.txt`**: Pozwala na przypisanie niestandardowych, przyjaznych nazw urządzeniom na podstawie ich adresów MAC. Każda linia w pliku powinna mieć format:
     `AA:BB:CC:DD:EE:FF Moja niestandardowa nazwa urządzenia`
-    Przykład: `00:1A:2B:3C:4D:5E Serwer Plików`
+    Przykład: `00:1B:2B:3C:4E:5E Serwer Plików`
 *   **`port_serwer.txt`**: Umożliwia zdefiniowanie niestandardowych portów TCP, które pozwalają rozpoznać czy urządzenie ma uruchomiony serwer WWW. Każda linia w pliku powinna mieć format:
 
     `# Przykładowy plik z niestandardowymi portami dla serwerów HTTP/HTTPS`
