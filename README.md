@@ -23,7 +23,7 @@ W ramach nauki programowania — bardziej kopiuj-wklej i research w sieci oraz n
 *   **Automatyczna instalacja zależności:** Próbuje automatycznie zainstalować brakujące biblioteki (`colorama`, `psutil`, `requests`) za pomocą `pip`.
 *   **Wsparcie dla wielu platform:** Działa w systemach Windows, Linux i macOS (wykorzystując odpowiednie polecenia systemowe).
 *   **Argumenty linii poleceń:** Umożliwia modyfikację zachowania skryptu, np. podanie prefiksu sieci, pominięcie pingowania, rozwiązywania nazw hostów, skanowania portów czy zgadywania OS.
-*   **Zapisywanie konfiguracji użytkownika:** Zapamiętuje ostatnio użyty prefiks sieci oraz wybrane kolumny do wyświetlenia w konsoli w pliku `config.json`. Na razie jeszcze nie działa. :-(
+*   **Zapisywanie konfiguracji użytkownika:** Zapamiętuje ostatnio użyty prefiks sieci oraz wybrane kolumny do wyświetlenia w konsoli w pliku `config.json`.
 *   **Interaktywny wybór kolumn:** Pozwala użytkownikowi wybrać, które kolumny mają być wyświetlane w tabeli w konsoli.
 *   **Wyświetlanie czasu skanowania:** Informuje o całkowitym czasie trwania skanowania.
 
@@ -129,10 +129,13 @@ Skrypt wykorzystuje również zewnętrzne pliki tekstowe (umieszczone w tym samy
     `AA:BB:CC:DD:EE:FF Moja niestandardowa nazwa urządzenia`
     Przykład: `00:1A:2B:3C:4D:5E Serwer Plików`
 *   **`port_serwer.txt`**: Umożliwia zdefiniowanie niestandardowych portów TCP, które pozwalają rozpoznać czy urządzenie ma uruchomiony serwer WWW. Każda linia w pliku powinna mieć format:
+
+    `# Przykładowy plik z niestandardowymi portami dla serwerów HTTP/HTTPS`
+    `# Linie zaczynające się od '#' są ignorowane.`
     `[https]`
-    `443`
+    `443 Serwer webowy https`
     `[http]`
-    `80`
+    `80 Serwer webowy http`
 
 *   **`oui.txt`**: Lokalna kopia bazy danych OUI (Organizationally Unique Identifier), pobierana i aktualizowana automatycznie przez skrypt.
 
