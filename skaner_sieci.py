@@ -70,26 +70,6 @@ def wyczysc_wskazana_ilosc_linii_konsoli(liczba_linii: int = 1):
     # Upewnij się, że zmiany są natychmiast widoczne
     sys.stdout.flush()    
 
-# Funkcja do obsługi przerwania przez użytkownika (Ctrl+C)
-def obsluz_przerwanie_uzytkownika():
-    """
-    Obsługuje wyjątek KeyboardInterrupt (Ctrl+C).
-    Czyści bieżącą linię konsoli, wyświetla standardowy komunikat
-    o przerwaniu i kończy działanie skryptu z kodem 0.
-    """
-    try:
-        # Wyczyść bieżącą linię (na wypadek, gdyby kursor był w trakcie input() lub postępu)
-        sys.stdout.write("\r\033[K")
-        sys.stdout.flush()
-        # wyczysc_wskazana_ilosc_linii_konsoli()
-
-    except Exception:
-        # Ignoruj błędy podczas czyszczenia, np. jeśli strumień jest zamknięty
-        pass
-    # Wyświetl ujednolicony komunikat i zakończ
-    print(f"\n{Fore.YELLOW}Przerwano przez użytkownika. Zakończono.{Style.RESET_ALL}\n")
-    sys.exit(0) # Zakończ skrypt z kodem sukcesu (bo to intencja użytkownika)
-
 # Funkcja pomocnicza do instalacji
 def zainstaluj_pakiet(nazwa_pakietu: str) -> bool:
     """Próbuje zainstalować pakiet używając pip."""
@@ -113,6 +93,26 @@ def zainstaluj_pakiet(nazwa_pakietu: str) -> bool:
     except Exception as e:
         print(f"{Fore.RED}Nieoczekiwany błąd podczas próby instalacji '{nazwa_pakietu}': {e}{Style.RESET_ALL}")
         return False
+    
+# Funkcja do obsługi przerwania przez użytkownika (Ctrl+C)
+def obsluz_przerwanie_uzytkownika():
+    """
+    Obsługuje wyjątek KeyboardInterrupt (Ctrl+C).
+    Czyści bieżącą linię konsoli, wyświetla standardowy komunikat
+    o przerwaniu i kończy działanie skryptu z kodem 0.
+    """
+    try:
+        # Wyczyść bieżącą linię (na wypadek, gdyby kursor był w trakcie input() lub postępu)
+        sys.stdout.write("\r\033[K")
+        sys.stdout.flush()
+        # wyczysc_wskazana_ilosc_linii_konsoli()
+
+    except Exception:
+        # Ignoruj błędy podczas czyszczenia, np. jeśli strumień jest zamknięty
+        pass
+    # Wyświetl ujednolicony komunikat i zakończ
+    print(f"\n{Fore.YELLOW}Przerwano przez użytkownika. Zakończono.{Style.RESET_ALL}\n")
+    sys.exit(0) # Zakończ skrypt z kodem sukcesu (bo to intencja użytkownika)
 
 def sprawdz_i_zainstaluj_biblioteke(
     nazwa_biblioteki: str,
@@ -226,6 +226,10 @@ else:
     class Retry: pass
     class HTTPAdapter: pass
 
+# Sentinelowe wartości dla obsługi argumentów linii poleceń
+AUTO_PREFIX_SENTINEL = object()
+DEFAULT_COLUMNS_SENTINEL = object()
+
 # --- Konfiguracja ---
 
 # --- Konfiguracja Aktualizacji Skryptu ---
@@ -290,6 +294,7 @@ OPISY_PORTOW: Dict[int, str] = {
     5061: "SIPS (SIP Secure) - bezpieczna wersja SIP",
     67: "DHCP (Dynamic Host Configuration Protocol) - Server",
     68: "DHCP (Dynamic Host Configuration Protocol) - Client",
+    69: "TFTP",
     161: "SNMP (Simple Network Management Protocol) - Agent",
     162: "SNMP (Simple Network Management Protocol) - Trap",
     631: "IPP (Internet Printing Protocol) - drukarki sieciowe",
@@ -301,6 +306,7 @@ OPISY_PORTOW: Dict[int, str] = {
     2376: "Docker Daemon (z TLS)",
     4000: "Serwery deweloperskie (często używany przez różne frameworki)",
     5000: "Serwery deweloperskie (często Flask w Pythonie)",
+    7000-9000: "VOIP(RTP)",
     8081: "Alternatywny HTTP (często używany przez serwery proxy lub aplikacje Java)",
     8888: "Jupyter Notebook",
     9000: "FastCGI (często używany z serwerami PHP-FPM)",
@@ -317,6 +323,7 @@ OPISY_PORTOW: Dict[int, str] = {
     8080: "Audiobookshelf (HTTP) - Domyślny, ale konfigurowalny",
     13378: "Audiobookshelf (HTTP) - Domyślny, ale konfigurowalny",
     8443: "Audiobookshelf (HTTPS) - Jeśli skonfigurowano SSL",
+    1720: "H.323",
     
     # Inne podobne usługi i ich domyślne porty
 }
@@ -418,7 +425,7 @@ KOLUMNY_TABELI: Dict[str, Dict[str, Any]] = {
     "host":         {"naglowek": "Nazwa Hostu",     "szerokosc": 21},
     "porty":        {"naglowek": "Otwarte Porty",   "szerokosc": 31},
     "os":           {"naglowek": "System (Przyp.)", "szerokosc": 17},
-    "oui":          {"naglowek": "Producent (OUI)", "szerokosc": 30}
+    "oui":          {"naglowek": "Producent (OUI)", "szerokosc": 28}
 }
 # Domyślnie wyświetlane kolumny
 DOMYSLNE_KOLUMNY_DO_WYSWIETLENIA: List[str] = ["lp", "ip", "mac", "host", "porty", "os", "oui"] # Zmieniono host_porty na host i porty
@@ -655,29 +662,6 @@ def sprawdz_i_zaproponuj_aktualizacje():
         print(f"{Fore.YELLOW}Nie można było sprawdzić dostępności aktualizacji.{Style.RESET_ALL}")
     wyswietl_tekst_w_linii("-", DEFAULT_LINE_WIDTH, "", Fore.LIGHTCYAN_EX, Fore.LIGHTCYAN_EX, dodaj_odstepy=False)
 
-# def save_config(last_prefix: str, displayed_columns: list[str], include_in_html: bool):
-#     """
-#     Zapisuje ostatnio użyty prefiks sieci, wybrane kolumny i flagę HTML do pliku config.json.
-
-#     Args:
-#         last_prefix (str): Ostatnio użyty prefiks sieci (np. "192.168.1.").
-#         displayed_columns (list[str]): Lista nazw kolumn do wyświetlenia.
-#         include_in_html (bool): Czy wybór kolumn ma być uwzględniony w raporcie HTML.
-
-#     """
-#     config_data = {
-#         "last_prefix": last_prefix,
-#         "displayed_columns": displayed_columns,
-#         "include_in_html": include_in_html
-
-#     }
-#     try:
-#         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-#             json.dump(config_data, f, indent=4)
-#         print(f"Konfiguracja zapisana do pliku: {CONFIG_FILE}")
-#     except IOError as e:
-#         print(f"Błąd podczas zapisywania konfiguracji do pliku {CONFIG_FILE}: {e}")
-
 def load_config() -> tuple[Optional[str], Optional[List[str]], Optional[bool]]:
     """
     Odczytuje ostatnio użyty prefiks sieci i wybrane kolumny z pliku config.json.
@@ -723,7 +707,6 @@ def load_config() -> tuple[Optional[str], Optional[List[str]], Optional[bool]]:
     except Exception as e:
         print(f"Nieoczekiwany błąd podczas ładowania konfiguracji z {CONFIG_FILE}: {e}")
         return None, None, None
-
 
 def pobierz_prefixy_zdalne_vpn(nazwa_interfejsu_vpn: str) -> List[str]:
     """
@@ -1445,7 +1428,6 @@ def skanuj_wybrane_porty_dla_ip(ip: str, porty_do_skanowania: Optional[List[int]
     if not ports_to_scan:
         # print(f"Brak portów do skanowania dla {ip}.") # Debug
         return otwarte_porty
-
     # print(f"Rozpoczynanie skanowania {len(ports_to_scan)} portów dla {ip} (max {MAX_PORT_SCAN_WORKERS} wątków)...") # Debug
     try:
         # Upewnij się, że nie tworzymy więcej wątków niż portów do skanowania
@@ -1928,8 +1910,6 @@ def czy_aktywny_vpn_lub_podobny() -> Optional[str]: # Zmieniono typ zwracany na 
         print(f"{Fore.YELLOW}Ostrzeżenie: Wystąpił błąd podczas sprawdzania interfejsów sieciowych dla VPN: {e}{Style.RESET_ALL}")
         return None
 
-
-
 def _ping_single_ip(ip: str, system: str) -> Optional[str]:
     """
     Wysyła pojedynczy ping do podanego adresu IP.
@@ -2052,7 +2032,6 @@ def zintegruj_niestandardowe_porty_z_opisami(
     if liczba_nowo_dodanych_portow == 0 and liczba_nadpisanych_opisow == 0 and any(niestandardowe_mapa.values()):
         print(f"{Fore.CYAN}Przetworzono plik port_serwer.txt, ale nie dodano nowych portów ani nie nadpisano istniejących opisów (mogą być już zgodne).{Style.RESET_ALL}")
     # OPISY_PORTOW są modyfikowane w miejscu, więc nie trzeba nic zwracać.
-
 
 def skanuj_porty_rownolegle(
     ips_do_skanowania: List[str],
@@ -2235,7 +2214,6 @@ def parsuj_tabele_arp(wynik_arp: Optional[str], siec_prefix: str) -> Dict[str, s
                 arp_map[ip] = mac
     return arp_map
 
-# --- Nowa funkcja ---
 def pobierz_ip_z_arp(siec_prefix: str) -> List[str]:
     """
     Pobiera listę adresów IP z tabeli ARP pasujących do danego prefiksu sieciowego.
@@ -2257,12 +2235,6 @@ def pobierz_ip_z_arp(siec_prefix: str) -> List[str]:
 
     # Klucze słownika mapa_arp to adresy IP
     lista_ip = list(mapa_arp.keys())
-
-    # if lista_ip:
-    #     print(f"Znaleziono {len(lista_ip)} adresów IP w tabeli ARP dla prefiksu {siec_prefix}.")
-    # else:
-    #     print(f"Nie znaleziono adresów IP w tabeli ARP dla prefiksu {siec_prefix}.")
-
     return lista_ip
 
 def pobierz_mac_adres(ip_address: Optional[str]) -> Optional[str]:
@@ -2769,7 +2741,6 @@ def pobierz_i_zweryfikuj_prefiks(cmd_prefix: Optional[str] = None) -> Optional[s
 
     return potwierdzony_prefiks
 
-
 def agreguj_informacje_o_urzadzeniach(
     lista_ip_do_przetworzenia: List[str],
     arp_map: Dict[str, str],
@@ -2856,7 +2827,6 @@ def agreguj_informacje_o_urzadzeniach(
     if not lista_urzadzen:
         return False
     return lista_urzadzen
-
 
 def wyswietl_tabele_urzadzen( 
     lista_urzadzen: List[DeviceInfo],
@@ -3304,7 +3274,6 @@ nazwa, rozs = rozdziel_nazwe_pliku(plik_zaczynajacy_od_kropki)
 # print(f"\nPełna nazwa: {plik_zaczynajacy_od_kropki}")
 # print(f"Nazwa bazowa: {nazwa}") # Zwróci ".bashrc
 
-
 def ustal_finalna_nazwe_pliku_html(
     nazwa_pliku_bazowa_html: str,
     siec_prefix: Optional[str] = None,
@@ -3334,8 +3303,6 @@ def ustal_finalna_nazwe_pliku_html(
     
     return finalna_nazwa_pliku
 
-
-
 def zapisz_tabele_urzadzen_do_html(
     lista_urzadzen: List[DeviceInfo],
     kolumny_do_wyswietlenia: List[str],
@@ -3362,27 +3329,6 @@ def zapisz_tabele_urzadzen_do_html(
     # PRZENIESIONO DEFINICJĘ script_name_for_wol NA POCZĄTEK,
     # ABY BYŁA DOSTĘPNA PODCZAS TWORZENIA F-STRINGA html_content.
     script_name_for_wol = html.escape(os.path.basename(__file__))
-
-
-#    # --- ROZSZERZONE DEBUGOWANIE DLA F-STRING ---
-#     print(f"{Fore.MAGENTA}DEBUG EXTRA: Typ zmiennej script_name_for_wol: {type(script_name_for_wol)}{Style.RESET_ALL}")
-#     print(f"{Fore.MAGENTA}DEBUG EXTRA: Wartość script_name_for_wol: '{script_name_for_wol}'{Style.RESET_ALL}")
-#     print(f"{Fore.MAGENTA}DEBUG EXTRA: Reprezentacja (repr) script_name_for_wol: {repr(script_name_for_wol)}{Style.RESET_ALL}")
-
-#     test_placeholder = "{script_name_for_wol}"
-#     print(f"{Fore.MAGENTA}DEBUG EXTRA: Testowy placeholder: '{test_placeholder}'{Style.RESET_ALL}")
-
-#     # Testowy, bardzo prosty f-string
-#     minimal_fstring_output = f"TEST_SCRIPT_NAME = \"{script_name_for_wol}\""
-#     print(f"{Fore.MAGENTA}DEBUG EXTRA: Wynik minimalnego f-stringa: '{minimal_fstring_output}'{Style.RESET_ALL}")
-
-#     if test_placeholder in minimal_fstring_output:
-#         print(f"{Fore.RED}DEBUG EXTRA: ALARM! Minimalny f-string również zawiera placeholder '{test_placeholder}' zamiast wartości!{Style.RESET_ALL}")
-#     elif script_name_for_wol in minimal_fstring_output:
-#         print(f"{Fore.GREEN}DEBUG EXTRA: OK! Minimalny f-string poprawnie wstawił wartość '{script_name_for_wol}'.{Style.RESET_ALL}")
-#     else:
-#         print(f"{Fore.YELLOW}DEBUG EXTRA: Coś dziwnego z minimalnym f-stringiem - ani placeholder, ani wartość nie zostały znalezione w oczekiwany sposób.{Style.RESET_ALL}")
-#     # --- KONIEC ROZSZERZONEGO DEBUGOWANIA ---
 
     html_content = f"""
 <!DOCTYPE html>
@@ -3819,30 +3765,8 @@ def zapisz_tabele_urzadzen_do_html(
     html_content = html_content.replace('"%%PLACEHOLDER_SCRIPT_NAME_WOL%%"', rzeczywista_wartosc_js_script_name)
     # --- Koniec obejścia ---
     
-
-
     # ... definicja html_content ...
     # script_name_for_wol = html.escape(os.path.basename(__file__)) # Upewnij się, że to jest zdefiniowane
-
-    # # --- POCZĄTEK DEBUGOWANIA ---
-    # print(f"{Fore.MAGENTA}DEBUG: Wartość dla script_name_for_wol: '{script_name_for_wol}'{Style.RESET_ALL}")
-    # # Wypisz fragment kodu HTML tuż przed miejscem, gdzie jest placeholder {0}
-    # # ZMIANA: Usunięto stary blok debugowania, ponieważ .format() nie jest już używane w ten sposób.
-    # # Można dodać nowy, jeśli potrzebne, np. sprawdzający obecność {script_name_for_wol}
-    # script_name_placeholder_in_fstring = f'"{script_name_for_wol}"' # Tak powinno wyglądać w f-stringu
-    # placeholder_index_new = html_content.find(script_name_placeholder_in_fstring)
-    # if placeholder_index_new != -1:
-    #     print(f"{Fore.CYAN}DEBUG: Znaleziono wstawioną nazwę skryptu '{script_name_placeholder_in_fstring}' w html_content (co jest oczekiwane).{Style.RESET_ALL}")
-    #     # start_index = max(0, placeholder_index_new - 100)
-    #     # end_index = min(len(html_content), placeholder_index_new + len(script_name_placeholder_in_fstring) + 100)
-    #     # print(f"{Fore.CYAN}DEBUG: Fragment html_content wokół wstawionej nazwy skryptu:\n"
-    #     #       f"...{html_content[start_index:placeholder_index_new]}"
-    #     #       f"{Fore.YELLOW}{html_content[placeholder_index_new : placeholder_index_new + len(script_name_placeholder_in_fstring)]}{Fore.CYAN}"
-    #     #       f"{html_content[placeholder_names[0] + len(script_name_placeholder_in_fstring) : end_index]}...{Style.RESET_ALL}")
-    # else:
-    #     print(f"{Fore.RED}DEBUG: Nie znaleziono wstawionej nazwy skryptu '{script_name_placeholder_in_fstring}' w html_content!{Style.RESET_ALL}")
-    
-    # # --- KONIEC DEBUGOWANIA ---
 
     try:
         # Zdefiniuj kolory tutaj, aby były dostępne
@@ -3862,43 +3786,6 @@ def zapisz_tabele_urzadzen_do_html(
     except Exception as e:
         print(f"{red_color}Nieoczekiwany błąd podczas zapisu pliku HTML: {e}{reset_color}")
         return None # Zwróć None w przypadku błędu
-
-# def zapisz_konfiguracje_na_koniec_skryptu(
-#     siec_prefix: Optional[str],
-#     kolumny_dla_terminalu: List[str],
-#     uzyc_wybranych_w_html: bool,
-#     cmd_menu_choice_to_use: Optional[str]
-# ) -> None:
-#     """
-#     Zapisuje konfigurację na koniec działania skryptu.
-#     Jeśli użyto parametru -m, zapisuje tylko ostatni prefiks sieci.
-#     W przeciwnym razie zapisuje pełną konfigurację (prefiks, kolumny, opcja HTML).
-#     """
-#     if not siec_prefix: # Zapisuj tylko, jeśli prefiks został pomyślnie ustalony
-#         return
-
-#     if cmd_menu_choice_to_use is not None:
-#         # Parametr -m był użyty. Chcemy zaktualizować tylko 'last_prefix'.
-#         config_data_to_save: Dict[str, Any] = {}
-#         if os.path.exists(CONFIG_FILE):
-#             try:
-#                 with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-#                     config_data_to_save = json.load(f)
-#             except (json.JSONDecodeError, IOError) as e:
-#                 print(f"{Fore.YELLOW}Ostrzeżenie: Nie udało się odczytać istniejącego pliku {CONFIG_FILE} przed zapisem (błąd: {e}). Zostanie utworzony nowy z tylko prefiksem.{Style.RESET_ALL}")
-#                 config_data_to_save = {}
-
-#         config_data_to_save["last_prefix"] = siec_prefix
-        
-#         try:
-#             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-#                 json.dump(config_data_to_save, f, indent=4)
-#             print(f"{Fore.CYAN}Parametr -m był użyty. Zaktualizowano prefiks sieci w {CONFIG_FILE}. Konfiguracja kolumn/HTML pozostała bez zmian.{Style.RESET_ALL}")
-#         except IOError as e:
-#             print(f"Błąd podczas zapisywania konfiguracji (tylko prefiks) do pliku {CONFIG_FILE}: {e}")
-#     else:
-#         # Parametr -m NIE był użyty, zapisz normalnie wyniki z interaktywnego menu
-#         save_config(siec_prefix, kolumny_dla_terminalu, uzyc_wybranych_w_html)
 
 def obsluz_generowanie_raportu_html(
     lista_urzadzen_do_wyswietlenia: List[DeviceInfo],
@@ -4274,18 +4161,25 @@ def obsluz_argumenty_linii_polecen() -> Tuple[Optional[str], Optional[str]]:
         # Zmieniamy epilog, aby nie pokazywał domyślnego błędu, gdy argument jest bez wartości
         # Można też użyć add_help=False i własnej obsługi -h, ale to bardziej skomplikowane.
         # Na razie standardowy help wystarczy.
+        add_help=False  # Wyłączamy domyślną pomoc, aby dodać własną po polsku
     )
     # Definiujemy unikalne wartości sentinelowe do wykrycia, czy flaga była podana bez argumentu
     SENTINEL_NO_VALUE_PREFIX = object()
     SENTINEL_NO_VALUE_MENU = object()
 
     parser.add_argument(
+        '-h', '--help',
+        action='help',
+        default=argparse.SUPPRESS, # Nie dodawaj do obiektu args, jeśli nie jest to potrzebne
+        help='wyświetl ten komunikat pomocy i zakończ'
+    )
+    parser.add_argument(
         "-p", "--prefix",
         nargs='?',  # Argument jest opcjonalny
         const=SENTINEL_NO_VALUE_PREFIX,  # Wartość, jeśli -p jest podane bez argumentu
         default=None,  # Wartość, jeśli -p nie ma w ogóle
         type=str,      # Nadal oczekujemy stringa, jeśli argument jest podany
-        help="Prefiks sieciowy do skanowania (np. 192.168.1.). Pomija interaktywne pytanie."
+        help="Prefiks sieci do skanowania (np. 192.168.1.). Jeśli podany bez wartości, użyty zostanie automatycznie wykryty prefiks sieci."
     )
     parser.add_argument(
         "-m", "--menu-choice",
@@ -4293,7 +4187,7 @@ def obsluz_argumenty_linii_polecen() -> Tuple[Optional[str], Optional[str]]:
         const=SENTINEL_NO_VALUE_MENU,  # Wartość, jeśli -m jest podane bez argumentu
         default=None,  # Wartość, jeśli -m nie ma w ogóle
         type=str,      # Nadal oczekujemy stringa, jeśli argument jest podany
-        help="Wybór opcji menu dla kolumn i raportu HTML (np. '17'). Pomija interaktywne menu."
+        help="Wybór kolumn do wyświetlenia (np. '0', '17'). Jeśli podany bez wartości, użyte zostaną domyślne kolumny."
     )
     parser.add_argument(
         "-wol", "--wake-on-lan",
@@ -4315,8 +4209,8 @@ def obsluz_argumenty_linii_polecen() -> Tuple[Optional[str], Optional[str]]:
     # Przetwarzanie argumentów -p i -m, jeśli -wol nie został użyty
     cmd_prefix_to_use = args.prefix
     if args.prefix is SENTINEL_NO_VALUE_PREFIX:
-        print(f"{Fore.YELLOW}Ostrzeżenie: Parametr -p został podany bez wartości. Prefiks zostanie pobrany interaktywnie.{Style.RESET_ALL}")
-        cmd_prefix_to_use = None
+        print(f"{Fore.CYAN}Parametr -p podany bez wartości. Użyty zostanie automatycznie wykryty prefiks sieci.{Style.RESET_ALL}")
+        cmd_prefix_to_use = AUTO_PREFIX_SENTINEL
 
     # Zamiast bezpośredniego wywołania sys.exit(0) w zainstaluj_pakiet,
     # można by zwrócić flagę i obsłużyć wyjście tutaj, jeśli to konieczne.
@@ -4325,8 +4219,8 @@ def obsluz_argumenty_linii_polecen() -> Tuple[Optional[str], Optional[str]]:
     # Sprawdź, czy argumenty zostały podane bez wartości i potraktuj je jako None
     cmd_menu_choice_to_use = args.menu_choice
     if args.menu_choice is SENTINEL_NO_VALUE_MENU:
-        print(f"{Fore.YELLOW}Ostrzeżenie: Parametr -m został podany bez wartości. Menu wyboru kolumn zostanie wyświetlone.{Style.RESET_ALL}")
-        cmd_menu_choice_to_use = None
+        print(f"{Fore.CYAN}Parametr -m podany bez wartości. Użyte zostaną domyślne kolumny.{Style.RESET_ALL}")
+        cmd_menu_choice_to_use = DEFAULT_COLUMNS_SENTINEL
 
     return cmd_prefix_to_use, cmd_menu_choice_to_use
 
@@ -4335,7 +4229,7 @@ def obsluz_argumenty_linii_polecen() -> Tuple[Optional[str], Optional[str]]:
 if __name__ == "__main__":
     try:
         # 1. Obsługa argumentów linii poleceń (w tym -wol, który może zakończyć skrypt)
-        cmd_prefix_to_use, cmd_menu_choice_to_use = obsluz_argumenty_linii_polecen()
+        cmd_prefix_arg, cmd_menu_choice_arg = obsluz_argumenty_linii_polecen()
 
         # 2. Sprawdzenie aktualizacji
         sprawdz_i_zaproponuj_aktualizacje()
@@ -4383,37 +4277,56 @@ if __name__ == "__main__":
 
         # --- Ustalanie prefiksu sieciowego ---
         siec_prefix: Optional[str] = None
-        if cmd_prefix_to_use: # Jeśli podano argument -p
-            siec_prefix = pobierz_i_zweryfikuj_prefiks(cmd_prefix=cmd_prefix_to_use)
-
-        else: # Brak argumentu -p, sprawdź konfigurację i/lub tryb interaktywny
-            suggestion_from_config: Optional[str] = None
+        if cmd_prefix_arg is AUTO_PREFIX_SENTINEL:
+            siec_prefix_automatyczny = pobierz_prefiks_sieciowy()
+            if siec_prefix_automatyczny:
+                print(f"{Fore.GREEN}Używany automatycznie wykryty prefiks sieciowy: {siec_prefix_automatyczny}{Style.RESET_ALL}")
+                siec_prefix = siec_prefix_automatyczny
+            else:
+                print(f"{Fore.RED}Błąd: Parametr -p wymagał automatycznego wykrycia prefiksu, ale nie udało się go ustalić. Zakończono.{Style.RESET_ALL}")
+                sys.exit(1)
+        elif isinstance(cmd_prefix_arg, str): # Jeśli podano konkretny prefiks jako string
+            siec_prefix = pobierz_i_zweryfikuj_prefiks(cmd_prefix=cmd_prefix_arg)
+        else: # cmd_prefix_arg jest None (nie podano -p), użyj logiki interaktywnej/z configu
             if last_prefix_loaded: # Użyj last_prefix_loaded zamiast last_prefix_loaded_from_config dla spójności
-                temp_loaded = last_prefix_loaded
-                if not temp_loaded.endswith("."): temp_loaded += "."
-                if is_valid_prefix_format(temp_loaded):
-                    print(f"{Fore.CYAN}Ostatnio skanowany prefiks był: {temp_loaded}{Style.RESET_ALL}")
-                    suggestion_from_config = temp_loaded
-                else:
-                    print(f"{Fore.YELLOW}Ostatnio wczytany prefiks '{last_prefix_loaded}' jest niepoprawny. Próba auto-detekcji.{Style.RESET_ALL}")
-            siec_prefix = pobierz_i_zweryfikuj_prefiks(cmd_prefix=cmd_prefix_to_use)
-
-
-        # Przekaż wczytaną konfigurację menu do funkcji wyboru kolumn
-        kolumny_dla_terminalu, uzyc_wybranych_w_html = wybierz_kolumny_do_wyswietlenia(
-            wszystkie_kolumny_map=KOLUMNY_TABELI,
-            domyslne_kolumny_dla_menu=DOMYSLNE_KOLUMNY_DO_WYSWIETLENIA,
-            cmd_menu_choice=cmd_menu_choice_to_use,
-            loaded_selected_column_keys=displayed_columns_loaded,
-            loaded_include_in_html=include_in_html_loaded
-        )
-
-        if cmd_menu_choice_to_use is None: # Menu było interaktywne, zapisz jego stan
-            save_menu_config_state(kolumny_dla_terminalu, uzyc_wybranych_w_html)
-
-        if siec_prefix is None:
+                    temp_loaded_for_info = str(last_prefix_loaded) # Ensure string for .endswith
+                    if not temp_loaded_for_info.endswith("."):
+                        temp_loaded_for_info += "."                    
+                    if is_valid_prefix_format(temp_loaded_for_info):
+                        print(f"{Fore.CYAN}Ostatnio skanowany był prefiks: {temp_loaded_for_info}{Style.RESET_ALL}")
+                    else:
+                        # This else means last_prefix_loaded existed but was not a valid prefix format.
+                        print(f"{Fore.YELLOW}Ostatnio wczytany prefiks '{last_prefix_loaded}' (z pliku konfiguracyjnego) jest niepoprawny. Próba auto-detekcji.{Style.RESET_ALL}")
+                # Niezależnie od tego, co było w konfiguracji, jeśli -p nie jest użyte,
+                # pobierz_i_zweryfikuj_prefiks(cmd_prefix=None) wykona auto-detekcję i/lub zapyta.
+            siec_prefix = pobierz_i_zweryfikuj_prefiks(cmd_prefix=None)
+        if siec_prefix is None: # Jeśli po wszystkich próbach prefiks nadal jest None
             print(f"{Fore.RED}Nie udało się ustalić prefiksu sieciowego. Zakończono.{Style.RESET_ALL}")
-            sys.exit(1) 
+            sys.exit(1)
+
+        # --- Wybór kolumn ---
+        zapisz_konfiguracje_menu = False # Flaga, czy zapisać konfigurację menu
+        if cmd_menu_choice_arg is DEFAULT_COLUMNS_SENTINEL:
+            print(f"{Fore.GREEN}Używane domyślne kolumny i opcja HTML.{Style.RESET_ALL}\n")
+            kolumny_dla_terminalu = list(DOMYSLNE_KOLUMNY_DO_WYSWIETLENIA)
+            uzyc_wybranych_w_html = True # Domyślnie uwzględnij w HTML
+            # Nie ustawiamy zapisz_konfiguracje_menu na True, bo nie było interakcji z menu
+        else: # cmd_menu_choice_arg to string (np. "0", "17") lub None (interaktywne menu)
+            kolumny_dla_terminalu, uzyc_wybranych_w_html = wybierz_kolumny_do_wyswietlenia(
+                wszystkie_kolumny_map=KOLUMNY_TABELI,
+                domyslne_kolumny_dla_menu=DOMYSLNE_KOLUMNY_DO_WYSWIETLENIA,
+                cmd_menu_choice=cmd_menu_choice_arg, # Przekaż string lub None
+                loaded_selected_column_keys=displayed_columns_loaded,
+                loaded_include_in_html=include_in_html_loaded
+            )
+            if cmd_menu_choice_arg is None: # Menu było interaktywne
+                zapisz_konfiguracje_menu = True
+
+        # Zapis konfiguracji
+        if siec_prefix: # Zapisz prefiks, jeśli został ustalony
+            save_prefix_config_state(siec_prefix)
+        if zapisz_konfiguracje_menu: # Zapisz stan menu tylko, jeśli było interaktywne
+            save_menu_config_state(kolumny_dla_terminalu, uzyc_wybranych_w_html)
 
         print("Pobieranie/ładowanie bazy OUI...")
         baza_oui = pobierz_baze_oui(url=OUI_URL, plik_lokalny=OUI_LOCAL_FILE, timeout=REQUESTS_TIMEOUT, aktualizacja_co=OUI_UPDATE_INTERVAL)
@@ -4434,7 +4347,6 @@ if __name__ == "__main__":
             mac_nazwy_niestandardowe,
             niestandardowe_porty_serwera_mapa
         )
-
 
         lista_urzadzen_do_wyswietlenia: List[DeviceInfo] = []
         wyniki_skanowania_portow_do_legendy: Dict[str, List[int]] = {}
@@ -4473,11 +4385,6 @@ if __name__ == "__main__":
             opisy_portow_globalne=OPISY_PORTOW,
             niestandardowe_porty_serwera_mapa=niestandardowe_porty_serwera_mapa
         )
-
-        # Zapisz prefiks na sam koniec
-        if siec_prefix:
-            save_prefix_config_state(siec_prefix)
-
 
         wyswietl_tekst_w_linii("-",DEFAULT_LINE_WIDTH,"Skanowanie zakończone. Przewiń wyżej, aby zobaczyć wszystkie informacje.",Fore.LIGHTCYAN_EX,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
     except KeyboardInterrupt:

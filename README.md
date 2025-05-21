@@ -62,6 +62,15 @@ W ramach nauki programowania — bardziej kopiuj-wklej i research w sieci oraz n
     ```bash
     python skaner_sieci.py -p 192.168.0. -m 17
     ```
+    ```bash
+    python skaner_sieci.py -p
+    ```
+    ```bash
+    python skaner_sieci.py -p -m
+    ```
+    ```bash
+    python skaner_sieci.py --prefix --menu-choice
+    ```
     
     python skaner_sieci.py --prefix 192.168.0.      prefiks sieci do skanowania
 
