@@ -21,6 +21,20 @@ import json
 
 from dataclasses import dataclass, field
 
+# --- Inicjalizacja atrap Fore, Style i init ---
+# To zapewnia, że są zawsze zdefiniowane, nawet jeśli import colorama się nie powiedzie.
+class _DummyColorama: # Użyj wiodącego podkreślenia, aby uniknąć potencjalnych konfliktów nazw
+    def __getattr__(self, name: str) -> str:
+        return ""
+
+Fore = _DummyColorama()
+Style = _DummyColorama()
+COLORAMA_AVAILABLE = False # Załóż, że początkowo niedostępne
+def _dummy_init(autoreset: bool = True) -> None: # Atrapa funkcji init
+    pass
+init = _dummy_init
+# --- Koniec początkowych definicji atrap ---
+
 @dataclass
 class DeviceInfo:
     ip: str
@@ -46,6 +60,9 @@ class DeviceInfo:
 #pip uninstall colorama
 #pip install colorama
 
+#pip uninstall readchar 
+#pip install readchar 
+
 def wyczysc_wskazana_ilosc_linii_konsoli(liczba_linii: int = 1):
     """
     Czyści wskazaną liczbę linii w konsoli, przesuwając kursor w górę
@@ -69,6 +86,27 @@ def wyczysc_wskazana_ilosc_linii_konsoli(liczba_linii: int = 1):
         sys.stdout.write("\033[K")
     # Upewnij się, że zmiany są natychmiast widoczne
     sys.stdout.flush()    
+# --- Konfiguracja i obsługa readchar ---
+_readchar_module = None
+_readchar_key_module = None
+READCHAR_AVAILABLE_FOR_INPUT = False
+
+try:
+    import readchar as rc_mod
+    from readchar import key as rck_mod # type: ignore
+    _readchar_module = rc_mod
+    _readchar_key_module = rck_mod
+    READCHAR_AVAILABLE_FOR_INPUT = True
+except ImportError:
+    # Definicja atrapy dla kluczy, jeśli readchar nie jest zainstalowany.
+    # custom_input_with_esc będzie używać standardowego input().
+    class _DummyReadcharKeys: # type: ignore
+        ESC = '\x1b'
+        ENTER = '\r' # Na Windows, readchar.key.ENTER to '\r'
+        BACKSPACE = '\x08' # lub readchar.key.BACKSPACE
+        CTRL_C = '\x03'
+    _readchar_key_module = _DummyReadcharKeys()
+
 
 # Funkcja pomocnicza do instalacji
 def zainstaluj_pakiet(nazwa_pakietu: str) -> bool:
@@ -114,6 +152,42 @@ def obsluz_przerwanie_uzytkownika():
     print(f"\n{Fore.YELLOW}Przerwano przez użytkownika. Zakończono.{Style.RESET_ALL}\n")
     sys.exit(0) # Zakończ skrypt z kodem sukcesu (bo to intencja użytkownika)
 
+def custom_input_with_esc(prompt_message: str) -> str:
+    """
+    Niestandardowa funkcja input, która obsługuje klawisz Esc do przerwania.
+    Używa biblioteki 'readchar' jeśli jest dostępna, w przeciwnym razie standardowego input().
+    """
+    if READCHAR_AVAILABLE_FOR_INPUT and _readchar_module and _readchar_key_module:
+        sys.stdout.write(prompt_message)
+        sys.stdout.flush()
+        
+        buffer = []
+        while True:
+            key_pressed = _readchar_module.readkey()
+            
+            if key_pressed == _readchar_key_module.ESC:
+                raise KeyboardInterrupt("ESC pressed")
+            elif key_pressed == _readchar_key_module.ENTER: # Zazwyczaj '\r'
+                sys.stdout.write('\n')
+                sys.stdout.flush()
+                return "".join(buffer)
+            elif key_pressed == _readchar_key_module.BACKSPACE:
+                if buffer:
+                    buffer.pop()
+                    sys.stdout.write('\b \b') # Przesuń kursor w lewo, nadpisz spacją, przesuń w lewo
+                    sys.stdout.flush()
+            elif key_pressed == _readchar_key_module.CTRL_C:
+                raise KeyboardInterrupt("Ctrl+C pressed")
+            elif len(key_pressed) == 1 and key_pressed.isprintable():
+                buffer.append(key_pressed)
+                sys.stdout.write(key_pressed)
+                sys.stdout.flush()
+            # Ignoruj inne nieobsługiwane klawisze specjalne (np. strzałki) w tej prostej implementacji
+    else:
+        # Fallback do standardowego input, jeśli readchar nie jest dostępne
+        return input(prompt_message)
+
+
 def sprawdz_i_zainstaluj_biblioteke(
     nazwa_biblioteki: str,
     nazwa_importu: str,
@@ -137,9 +211,9 @@ def sprawdz_i_zainstaluj_biblioteke(
             prompt_text = (
                 f"{Fore.YELLOW}Biblioteka '{nazwa_biblioteki}' nie jest zainstalowana. "
                 f"Bez niej: {komunikat_ostrzezenia_specyficzny}\n"
-                f"Czy chcesz spróbować zainstalować ją teraz? ({Fore.LIGHTMAGENTA_EX}t/N{Style.RESET_ALL}{Fore.YELLOW}{Style.RESET_ALL}"
+                f"Czy chcesz spróbować zainstalować ją teraz? ({Fore.LIGHTMAGENTA_EX}t/N{Style.RESET_ALL}{Fore.YELLOW}){Style.RESET_ALL}"
             )
-            odpowiedz = input(prompt_text).lower().strip()
+            odpowiedz = custom_input_with_esc(prompt_text).lower().strip()
             if odpowiedz.startswith('t') or odpowiedz.startswith('y'): # Tylko 't' lub 'y' inicjuje instalację             
                 if zainstaluj_pakiet(nazwa_biblioteki):
                     print(komunikat_sukcesu_instalacji)
@@ -164,19 +238,37 @@ def sprawdz_i_zainstaluj_biblioteke(
             print(f"\n")
             obsluz_przerwanie_uzytkownika() # Wywołaj standardową obsługę przerwania
             return False 
+        
+# 0. Sprawdzanie Readchar (musi być pierwsze, aby custom_input_with_esc działało dla innych promptów)
+if not READCHAR_AVAILABLE_FOR_INPUT: # Jeśli wstępny import się nie powiódł
+    # Komunikat o braku readchar i prośba o instalację
+    # Ta konkretna prośba użyje standardowego input(), bo custom_input_with_esc jeszcze nie może działać z readchar
+    print("\n" + f"{Style.BRIGHT}-{Style.RESET_ALL}" * 70)
+    print(f"\n{Fore.YELLOW}Ostrzeżenie: Biblioteka 'readchar' nie jest zainstalowana.{Style.RESET_ALL}")
+    print(f"{Fore.YELLOW}Jest ona potrzebna do obsługi klawisza ESC jako przerwania w trakcie wpisywania danych.{Style.RESET_ALL}")
+    print(f"{Fore.YELLOW}Bez niej, tylko Ctrl+C będzie przerywać program w tych miejscach.{Style.RESET_ALL}")
+    try:
+        odpowiedz_readchar = input(f"{Fore.YELLOW}Czy chcesz spróbować zainstalować 'readchar' teraz? (t/N): {Style.RESET_ALL}").lower().strip()
+        if odpowiedz_readchar.startswith('t') or odpowiedz_readchar.startswith('y'):
+            if zainstaluj_pakiet("readchar"):
+                print(f"{Fore.CYAN}Instalacja 'readchar' zakończona. Uruchom skrypt ponownie, aby włączyć obsługę ESC.{Style.RESET_ALL}")
+                sys.exit(0)
+    except (EOFError, KeyboardInterrupt):
+        obsluz_przerwanie_uzytkownika()
+    print(f"{Style.BRIGHT}-{Style.RESET_ALL}" * 70)
 
 # 1. Sprawdzanie Colorama
 try:
     from colorama import Fore, Style, init
-    COLORAMA_AVAILABLE = True
-    init(autoreset=True)
+        # Nadpisz atrapy prawdziwymi obiektami, jeśli import się powiódł
+    # Fore, Style, init są już zdefiniowane jako atrapy, więc nie ma potrzeby ich ponownego przypisywania tutaj,
+    # chyba że chcemy je jawnie nadpisać. Dla spójności, nadpiszemy.
+    globals()['Fore'] = Fore
+    globals()['Style'] = Style
+    globals()['init'] = init
+    COLORAMA_AVAILABLE = True # Ustaw na True, jeśli import się powiódł
+    init(autoreset=True) # Wywołaj prawdziwą funkcję init
 except ImportError:
-    COLORAMA_AVAILABLE = False
-    class DummyColorama:
-        def __getattr__(self, name): return ""
-    Fore = DummyColorama()
-    Style = DummyColorama()
-    def init(autoreset=True): pass
 
     # Wywołanie nowej funkcji dla Colorama
     # Ponieważ Fore i Style są już zdefiniowane jako atrapy, komunikaty będą działać
@@ -643,7 +735,7 @@ def sprawdz_i_zaproponuj_aktualizacje():
             print(f"{Fore.GREEN}Dostępna jest nowa wersja skryptu: {najnowsza_wersja_str}!{Style.RESET_ALL}")
             print(f"{Fore.CYAN}Zmiany w nowej wersji: {changelog}{Style.RESET_ALL}")
             try:
-                odpowiedz = input(f"Czy chcesz pobrać najnowszą wersję teraz? ({Fore.LIGHTMAGENTA_EX}t/N{Style.RESET_ALL}{Fore.YELLOW}): ").lower().strip()
+                odpowiedz = custom_input_with_esc(f"Czy chcesz pobrać najnowszą wersję teraz? ({Fore.LIGHTMAGENTA_EX}t/N{Style.RESET_ALL}{Fore.YELLOW}): ").lower().strip()
                 if odpowiedz.startswith('t') or odpowiedz.startswith('y'):
                     nazwa_bazowa, rozszerzenie = os.path.splitext(os.path.basename(__file__))
                     nazwa_nowego_pliku = f"{nazwa_bazowa}_v{najnowsza_wersja_str.replace('.', '_')}{rozszerzenie}"
@@ -1071,7 +1163,7 @@ def wybierz_kolumny_do_wyswietlenia_menu(
         print("-" * 80)
 
         try:
-            wybor = input("Twój wybór: ").lower().strip()
+            wybor = custom_input_with_esc("Twój wybór: ").lower().strip()
 
             if not wybor or wybor == 'q':
                 liczba_linii_do_wyczyszczenia = liczba_wyswietlonych_opcji_wszystkich + 11
@@ -2601,7 +2693,7 @@ def pobierz_i_zweryfikuj_prefiks(cmd_prefix: Optional[str] = None) -> Optional[s
                 print(f"{Fore.CYAN}Podano pełny adres IP '{cmd_prefix_stripped}' jako argument -p.{Style.RESET_ALL}")
                 try:
                     prompt_text = f"Czy chcesz skanować sieć z prefiksem '{extracted_prefix}'? ({Fore.LIGHTMAGENTA_EX}T/n{Style.RESET_ALL}): "
-                    odp = input(prompt_text).lower().strip()
+                    odp = custom_input_with_esc(prompt_text).lower().strip()
                     wyczysc_wskazana_ilosc_linii_konsoli()
                     if not odp or odp.startswith('t') or odp.startswith('y'):
                         potwierdzony_prefiks = extracted_prefix
@@ -2641,7 +2733,7 @@ def pobierz_i_zweryfikuj_prefiks(cmd_prefix: Optional[str] = None) -> Optional[s
         while potwierdzony_prefiks is None:
             try:
                 prompt_text = f"Potwierdź {Fore.LIGHTMAGENTA_EX}[Enter]{Style.RESET_ALL}, podaj inny prefiks/IP lub {Fore.LIGHTMAGENTA_EX}Ctrl+C{Style.RESET_ALL} aby zakończyć: "
-                odpowiedz_uzytkownika = input(prompt_text).strip()
+                odpowiedz_uzytkownika = custom_input_with_esc(prompt_text).strip()
                 wyczysc_wskazana_ilosc_linii_konsoli()
                 if not odpowiedz_uzytkownika: # Użytkownik nacisnął Enter
                     potwierdzony_prefiks = siec_prefix_automatyczny
@@ -2655,7 +2747,7 @@ def pobierz_i_zweryfikuj_prefiks(cmd_prefix: Optional[str] = None) -> Optional[s
                         print(f"{Fore.CYAN}Podano pełny adres IP '{odpowiedz_uzytkownika}'.{Style.RESET_ALL}")
                         try:
                             prompt_confirm_ip = f"Czy chcesz skanować sieć z prefiksem '{extracted_prefix}'? ({Fore.LIGHTMAGENTA_EX}T/n{Style.RESET_ALL}): "
-                            odp_confirm = input(prompt_confirm_ip).lower().strip()
+                            odp_confirm = custom_input_with_esc(prompt_confirm_ip).lower().strip()
                             wyczysc_wskazana_ilosc_linii_konsoli()
                             if not odp_confirm or odp_confirm.startswith('t') or odp_confirm.startswith('y'):
                                 potwierdzony_prefiks = extracted_prefix
@@ -2692,8 +2784,8 @@ def pobierz_i_zweryfikuj_prefiks(cmd_prefix: Optional[str] = None) -> Optional[s
         print(f"{Fore.YELLOW}Nie udało się automatycznie wykryć prefiksu sieciowego.{Style.RESET_ALL}")
         while potwierdzony_prefiks is None:
             try:
-                prompt_text = f"Podaj prefiks sieciowy (np. 192.168.1.), pełny adres IP (np. 192.168.1.100) lub {Fore.LIGHTMAGENTA_EX}Ctrl+C{Style.RESET_ALL} aby zakończyć: "
-                odpowiedz_uzytkownika = input(prompt_text).strip()
+                prompt_text = f"Podaj prefiks sieciowy (np. 192.168.1.), pełny adres IP (np. 192.168.1.100) lub {Fore.LIGHTMAGENTA_EX}Ctrl+C{Style.RESET_ALL} ({Fore.LIGHTMAGENTA_EX}Esc{Style.RESET_ALL}) aby zakończyć: "
+                odpowiedz_uzytkownika = custom_input_with_esc(prompt_text).strip()
                 wyczysc_wskazana_ilosc_linii_konsoli()
                 if not odpowiedz_uzytkownika:
                     print(f"{Fore.YELLOW}Prefiks/IP nie może być pusty. Spróbuj ponownie.{Style.RESET_ALL}")
@@ -2705,7 +2797,7 @@ def pobierz_i_zweryfikuj_prefiks(cmd_prefix: Optional[str] = None) -> Optional[s
                         print(f"{Fore.CYAN}Podano pełny adres IP '{odpowiedz_uzytkownika}'.{Style.RESET_ALL}")
                         try:
                             prompt_confirm_ip = f"Czy chcesz skanować sieć z prefiksem '{extracted_prefix}'? ({Fore.LIGHTMAGENTA_EX}T/n{Style.RESET_ALL}): "
-                            odp_confirm = input(prompt_confirm_ip).lower().strip()
+                            odp_confirm = custom_input_with_esc(prompt_confirm_ip).lower().strip()
                             wyczysc_wskazana_ilosc_linii_konsoli()
                             if not odp_confirm or odp_confirm.startswith('t') or odp_confirm.startswith('y'):
                                 potwierdzony_prefiks = extracted_prefix
@@ -3924,7 +4016,7 @@ def zapytaj_czy_zapisac_raport_html(
             # f"{Fore.LIGHTMAGENTA_EX}N{Style.RESET_ALL}=nie zapisuj | "
             # f"{Fore.LIGHTMAGENTA_EX}inna nazwa{Style.RESET_ALL}=podaj własną bazową nazwę): "
         )
-        odpowiedz = input(prompt_text).strip()
+        odpowiedz = custom_input_with_esc(prompt_text).strip()
 
         if not odpowiedz or odpowiedz.lower() == 't' or odpowiedz.lower() == 'y':
             # print(f"Zapisywanie raportu jako: {proponowana_pelna_nazwa}")
@@ -3973,7 +4065,7 @@ def zapytaj_i_otworz_raport_html(sciezka_do_pliku_html: Optional[str]) -> None:
 
     try:
         prompt_text = f"Czy chcesz otworzyć raport HTML ({os.path.basename(sciezka_do_pliku_html)}) w przeglądarce? ({Fore.LIGHTMAGENTA_EX}T/n{Style.RESET_ALL}): "
-        odpowiedz_otwarcie = input(prompt_text).lower().strip()
+        odpowiedz_otwarcie = custom_input_with_esc(prompt_text).lower().strip()
         # Jeśli użytkownik naciśnie Enter (pusta odpowiedź) LUB wpisze 't'/'y'
         if not odpowiedz_otwarcie or odpowiedz_otwarcie.startswith('t') or odpowiedz_otwarcie.startswith('y'):
             file_url = f"file://{sciezka_do_pliku_html}"
@@ -4148,7 +4240,7 @@ def waliduj_i_przetworz_parametry_wol(wol_args_input: List[str]) -> Optional[Tup
         print(f"  Adres MAC jest wymagany. Domyślny IP broadcast: {ip_to_return}, domyślny port: {port_to_return}.")
         
         try:
-            nowe_args_str = input(f"Podaj poprawne parametry WoL (MAC [IP PORT] lub MAC [PORT]) lub ({Fore.LIGHTMAGENTA_EX}Ctrl+C{Style.RESET_ALL}) aby wyjść: ")
+            nowe_args_str = custom_input_with_esc(f"Podaj poprawne parametry WoL (MAC [IP PORT] lub MAC [PORT]) lub ({Fore.LIGHTMAGENTA_EX}Ctrl+C{Style.RESET_ALL} / {Fore.LIGHTMAGENTA_EX}Esc{Style.RESET_ALL}) aby wyjść: ")
             wol_args = shlex.split(nowe_args_str) # Podziel string na listę argumentów
         except (KeyboardInterrupt, EOFError):
             obsluz_przerwanie_uzytkownika() 
@@ -4230,6 +4322,11 @@ if __name__ == "__main__":
     try:
         # 1. Obsługa argumentów linii poleceń (w tym -wol, który może zakończyć skrypt)
         cmd_prefix_arg, cmd_menu_choice_arg = obsluz_argumenty_linii_polecen()
+
+        # Jeśli READCHAR_AVAILABLE_FOR_INPUT jest True, można by wyświetlić informację
+        if READCHAR_AVAILABLE_FOR_INPUT:
+            print(f"{Fore.CYAN}Info: Obsługa klawisza ESC jako przerwania jest aktywna w promptach.{Style.RESET_ALL}")
+
 
         # 2. Sprawdzenie aktualizacji
         sprawdz_i_zaproponuj_aktualizacje()
