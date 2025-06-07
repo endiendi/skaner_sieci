@@ -86,29 +86,9 @@ def wyczysc_wskazana_ilosc_linii_konsoli(liczba_linii: int = 1):
         sys.stdout.write("\033[K")
     # Upewnij się, że zmiany są natychmiast widoczne
     sys.stdout.flush()    
-# --- Konfiguracja i obsługa readchar ---
-_readchar_module = None
-_readchar_key_module = None
-READCHAR_AVAILABLE_FOR_INPUT = False
 
-try:
-    import readchar as rc_mod
-    from readchar import key as rck_mod # type: ignore
-    _readchar_module = rc_mod
-    _readchar_key_module = rck_mod
-    READCHAR_AVAILABLE_FOR_INPUT = True
-except ImportError:
-    # Definicja atrapy dla kluczy, jeśli readchar nie jest zainstalowany.
-    # custom_input_with_esc będzie używać standardowego input().
-    class _DummyReadcharKeys: # type: ignore
-        ESC = '\x1b'
-        ENTER = '\r' # Na Windows, readchar.key.ENTER to '\r'
-        BACKSPACE = '\x08' # lub readchar.key.BACKSPACE
-        CTRL_C = '\x03'
-    _readchar_key_module = _DummyReadcharKeys()
+# --- Funkcje pomocnicze, które muszą być zdefiniowane przed sprawdzaniem zależności ---
 
-
-# Funkcja pomocnicza do instalacji
 def zainstaluj_pakiet(nazwa_pakietu: str) -> bool:
     """Próbuje zainstalować pakiet używając pip."""
     print(f"Próba instalacji biblioteki '{nazwa_pakietu}' za pomocą pip...")
@@ -131,7 +111,7 @@ def zainstaluj_pakiet(nazwa_pakietu: str) -> bool:
     except Exception as e:
         print(f"{Fore.RED}Nieoczekiwany błąd podczas próby instalacji '{nazwa_pakietu}': {e}{Style.RESET_ALL}")
         return False
-    
+
 # Funkcja do obsługi przerwania przez użytkownika (Ctrl+C)
 def obsluz_przerwanie_uzytkownika():
     """
@@ -151,6 +131,24 @@ def obsluz_przerwanie_uzytkownika():
     # Wyświetl ujednolicony komunikat i zakończ
     print(f"\n{Fore.YELLOW}Przerwano przez użytkownika. Zakończono.{Style.RESET_ALL}\n")
     sys.exit(0) # Zakończ skrypt z kodem sukcesu (bo to intencja użytkownika)
+
+# Funkcja pomocnicza do wyświetlania bloku ostrzeżenia o braku biblioteki
+def _wyswietl_blok_ostrzezenia_o_bibliotece(
+    nazwa_biblioteki: str,
+    komunikat_ostrzezenia_specyficzny: str,
+    komunikat_statusu_instalacji: str,
+    czy_po_nieudanej_probie_instalacji: bool
+):
+    """Wyświetla sformatowany blok ostrzeżenia dotyczący braku/nieudanej instalacji biblioteki."""
+    print("\n" + f"{Style.BRIGHT}-{Style.RESET_ALL}" * 70)
+    if czy_po_nieudanej_probie_instalacji:
+        print(f"\n{Fore.YELLOW}Ostrzeżenie: Biblioteka '{nazwa_biblioteki}' nadal nie jest zainstalowana po próbie instalacji.{Style.RESET_ALL}")
+    else:
+        print(f"\n{Fore.YELLOW}Ostrzeżenie: Biblioteka '{nazwa_biblioteki}' nie jest zainstalowana.{Style.RESET_ALL}")
+    
+    print(komunikat_ostrzezenia_specyficzny) # Ten jest zawsze wyświetlany
+    print(komunikat_statusu_instalacji)     # Komunikat o niepowodzeniu lub pominięciu
+    print(f"{Style.BRIGHT}-{Style.RESET_ALL}" * 70)
 
 def custom_input_with_esc(prompt_message: str) -> str:
     """
@@ -187,6 +185,20 @@ def custom_input_with_esc(prompt_message: str) -> str:
         # Fallback do standardowego input, jeśli readchar nie jest dostępne
         return input(prompt_message)
 
+# --- Konfiguracja i obsługa readchar ---
+_readchar_module = None
+_readchar_key_module: Any = None # Inicjalizacja, aby uniknąć błędu UnboundLocalError
+READCHAR_AVAILABLE_FOR_INPUT = False
+
+# Definicja atrapy dla kluczy, jeśli readchar nie jest zainstalowany.
+# To zapewnia, że _readchar_key_module jest zawsze zdefiniowane dla custom_input_with_esc.
+class _DummyReadcharKeys:
+    ESC = '\x1b'
+    ENTER = '\r' # Na Windows, readchar.key.ENTER to '\r'
+    BACKSPACE = '\x08' # lub readchar.key.BACKSPACE
+    CTRL_C = '\x03'
+
+_readchar_key_module = _DummyReadcharKeys() # Inicjalizuj atrapą przed potencjalnym użyciem w custom_input_with_esc
 
 def sprawdz_i_zainstaluj_biblioteke(
     nazwa_biblioteki: str,
@@ -205,8 +217,6 @@ def sprawdz_i_zainstaluj_biblioteke(
         __import__(nazwa_importu)
         return True # Biblioteka jest dostępna
     except ImportError:
-        # Ostrzeżenia o braku biblioteki zostaną wyświetlone później,
-        # jeśli użytkownik nie przerwie lub instalacja się nie powiedzie.
         try:
             prompt_text = (
                 f"{Fore.YELLOW}Biblioteka '{nazwa_biblioteki}' nie jest zainstalowana. "
@@ -217,45 +227,43 @@ def sprawdz_i_zainstaluj_biblioteke(
             if odpowiedz.startswith('t') or odpowiedz.startswith('y'): # Tylko 't' lub 'y' inicjuje instalację             
                 if zainstaluj_pakiet(nazwa_biblioteki):
                     print(komunikat_sukcesu_instalacji)
-                    sys.exit(0) # Zakończ skrypt, aby użytkownik mógł go uruchomić ponownie z załadowaną biblioteką
+                    sys.exit(0) 
                 else:
-                    # Instalacja nie powiodła się. Wyświetl pełny kontekst ostrzeżenia.
-                    print("\n" + f"{Style.BRIGHT}-{Style.RESET_ALL}" * 70)
-                    print(f"\n{Fore.YELLOW}Ostrzeżenie: Biblioteka '{nazwa_biblioteki}' nadal nie jest zainstalowana po próbie instalacji.{Style.RESET_ALL}")
-                    print(komunikat_ostrzezenia_specyficzny)
-                    print(komunikat_niepowodzenia_instalacji)
-                    print(f"{Style.BRIGHT}-{Style.RESET_ALL}" * 70)
-                    return False # Instalacja nie powiodła się
+                    _wyswietl_blok_ostrzezenia_o_bibliotece(nazwa_biblioteki, komunikat_ostrzezenia_specyficzny, komunikat_niepowodzenia_instalacji, True)
+                    return False 
             else:
-                # Użytkownik wybrał 'n' lub Enter. Wyświetl pełny kontekst ostrzeżenia.
-                print("\n" + f"{Style.BRIGHT}-{Style.RESET_ALL}" * 70)
-                print(f"\n{Fore.YELLOW}Ostrzeżenie: Biblioteka '{nazwa_biblioteki}' nie jest zainstalowana.{Style.RESET_ALL}")
-                print(komunikat_ostrzezenia_specyficzny)
-                print(komunikat_pominieto_instalacje)
-                print(f"{Style.BRIGHT}-{Style.RESET_ALL}" * 70)
-                return False # Użytkownik pominął instalację
+                _wyswietl_blok_ostrzezenia_o_bibliotece(nazwa_biblioteki, komunikat_ostrzezenia_specyficzny, komunikat_pominieto_instalacje, False)
+                return False 
         except (EOFError, KeyboardInterrupt):
-            print(f"\n")
-            obsluz_przerwanie_uzytkownika() # Wywołaj standardową obsługę przerwania
-            return False 
-        
-# 0. Sprawdzanie Readchar (musi być pierwsze, aby custom_input_with_esc działało dla innych promptów)
-if not READCHAR_AVAILABLE_FOR_INPUT: # Jeśli wstępny import się nie powiódł
-    # Komunikat o braku readchar i prośba o instalację
-    # Ta konkretna prośba użyje standardowego input(), bo custom_input_with_esc jeszcze nie może działać z readchar
-    print("\n" + f"{Style.BRIGHT}-{Style.RESET_ALL}" * 70)
-    print(f"\n{Fore.YELLOW}Ostrzeżenie: Biblioteka 'readchar' nie jest zainstalowana.{Style.RESET_ALL}")
-    print(f"{Fore.YELLOW}Jest ona potrzebna do obsługi klawisza ESC jako przerwania w trakcie wpisywania danych.{Style.RESET_ALL}")
-    print(f"{Fore.YELLOW}Bez niej, tylko Ctrl+C będzie przerywać program w tych miejscach.{Style.RESET_ALL}")
-    try:
-        odpowiedz_readchar = input(f"{Fore.YELLOW}Czy chcesz spróbować zainstalować 'readchar' teraz? (t/N): {Style.RESET_ALL}").lower().strip()
-        if odpowiedz_readchar.startswith('t') or odpowiedz_readchar.startswith('y'):
-            if zainstaluj_pakiet("readchar"):
-                print(f"{Fore.CYAN}Instalacja 'readchar' zakończona. Uruchom skrypt ponownie, aby włączyć obsługę ESC.{Style.RESET_ALL}")
-                sys.exit(0)
-    except (EOFError, KeyboardInterrupt):
-        obsluz_przerwanie_uzytkownika()
-    print(f"{Style.BRIGHT}-{Style.RESET_ALL}" * 70)
+            obsluz_przerwanie_uzytkownika() 
+            return False
+
+try:
+    import readchar as rc_mod
+    from readchar import key as rck_mod # type: ignore
+    _readchar_module = rc_mod
+    _readchar_key_module = rck_mod # Przypisz prawdziwe klucze
+    READCHAR_AVAILABLE_FOR_INPUT = True
+except ImportError:
+    # readchar nie jest początkowo dostępny.
+    # _readchar_module pozostaje None.
+    # _readchar_key_module zostanie ustawione na instancję _DummyReadcharKeys dla fallbacku.
+    # _readchar_key_module jest już _DummyReadcharKeys() z globalnej inicjalizacji.
+
+    # Wywołaj zunifikowaną funkcję, aby zapytać o instalację.
+    # sprawdz_i_zainstaluj_biblioteke użyje custom_input_with_esc,
+    # która użyje standardowego input(), ponieważ READCHAR_AVAILABLE_FOR_INPUT jest False.
+    sprawdz_i_zainstaluj_biblioteke(
+        nazwa_biblioteki="readchar",
+        nazwa_importu="readchar",
+        komunikat_ostrzezenia_specyficzny="Jest ona potrzebna do obsługi klawisza ESC jako przerwania w trakcie wpisywania danych. Bez niej, tylko Ctrl+C będzie przerywać program w tych miejscach.",
+        komunikat_sukcesu_instalacji=f"{Fore.CYAN}Instalacja 'readchar' zakończona. Uruchom skrypt ponownie, aby włączyć obsługę ESC.{Style.RESET_ALL}",
+        komunikat_niepowodzenia_instalacji="Instalacja 'readchar' nie powiodła się. Obsługa ESC w promptach będzie wyłączona.",
+        komunikat_pominieto_instalacje="Instalacja 'readchar' pominięta. Obsługa ESC w promptach będzie wyłączona."
+    )
+    # Jeśli skrypt dotrze tutaj po wywołaniu, oznacza to, że readchar nie został zainstalowany lub instalacja nie powiodła się.
+    # READCHAR_AVAILABLE_FOR_INPUT jest już False. _readchar_module jest None. _readchar_key_module jest instancją _DummyReadcharKeys.
+    # custom_input_with_esc poprawnie użyje fallbacku.
 
 # 1. Sprawdzanie Colorama
 try:
@@ -3543,7 +3551,7 @@ def zapisz_tabele_urzadzen_do_html(
         if device.mac and device.mac != "Nieznany MAC": # Tylko jeśli MAC jest znany i nie jest to placeholder
             # Użyj device.mac (oryginalny, nieoczyszczony MAC, jeśli taki byłby problem)
             # ale mac_display_val powinien być już poprawnym MACem, jeśli device.mac istnieje
-            mac_html_content = f'<a href="javascript:void(0);" onclick="showWolCommand(\'{html.escape(device.mac)}\')" title="Wyślij pakiet Wake-on-LAN">{html.escape(mac_display_val)}</a>'
+            mac_html_content = f'<a href="javascript:void(0);" onclick="showWolCommand(\'{html.escape(device.mac)}\', \'{html.escape(device.ip)}\')" title="Wyślij pakiet Wake-on-LAN">{html.escape(mac_display_val)}</a>'
 
 
         row_data_base = {
@@ -3635,7 +3643,7 @@ def zapisz_tabele_urzadzen_do_html(
         <div class="wol-modal-content">
             <span class="wol-modal-close" onclick="closeWolModal()">&times;</span>
             <h2>Wyślij Pakiet Wake-on-LAN</h2>
-            <p>Aby wysłać pakiet Wake-on-LAN (WoL) do urządzenia z adresem MAC <strong id="wolMacAddress"></strong>, możesz użyć poniższego polecenia w terminalu, będąc w katalogu, w którym znajduje się skrypt:</p>
+            <p>Aby wysłać pakiet Wake-on-LAN (WoL) do urządzenia z adresem MAC <strong id="wolMacAddress"></strong> (kierując na adres IP <strong id="wolIpAddress"></strong>), możesz użyć poniższego polecenia w terminalu, będąc w katalogu, w którym znajduje się skrypt:</p>
             <input type="text" id="wolCommandInput" readonly>
             <button onclick="copyWolCommand()">Kopiuj</button>
             <p id="copyWolStatus"></p>
@@ -3813,16 +3821,18 @@ def zapisz_tabele_urzadzen_do_html(
         const wolModal = document.getElementById('wolModal'); // Get modal element once
 
 
-        function showWolCommand(macAddress) { 
+        function showWolCommand(macAddress, ipAddress) { // Dodano ipAddress
             const modal = document.getElementById('wolModal');
             const commandInput = document.getElementById('wolCommandInput');
             const macDisplay = document.getElementById('wolMacAddress');
+            const ipDisplay = document.getElementById('wolIpAddress'); // Nowy element dla IP
             const copyStatus = document.getElementById('copyWolStatus');
 
             macDisplay.textContent = macAddress;
-            commandInput.value = 'python ' + SCRIPT_NAME_WOL + ' -wol ' + macAddress; // SCRIPT_NAME_WOL jest już wartością
+            ipDisplay.textContent = ipAddress; // Wyświetl IP w modalu
+            commandInput.value = 'python ' + SCRIPT_NAME_WOL + ' -wol ' + macAddress + ' ' + ipAddress; // Dodaj IP do polecenia
             modal.style.display = 'block';
-            copyStatus.textContent = ''; // Wyczyść status kopiowania
+            copyStatus.textContent = '';
         } 
         
         function closeWolModal() {
