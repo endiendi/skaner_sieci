@@ -3454,7 +3454,8 @@ def zapisz_tabele_urzadzen_do_html(
     # --- Nowa logika do dynamicznego polecenia Pythona ---
     system_os = platform.system().lower()
     python_command_for_wol = "python3" if system_os in ["linux", "darwin"] else "python"
-    wol_help_text = f"W systemie {platform.system()} sugerowane jest użycie polecenia <code>{python_command_for_wol}</code>."
+    # wol_help_text = f"W systemie {platform.system()} sugerowane jest użycie polecenia <code>{python_command_for_wol}</code>."
+    wol_help_text = f"W systemie Windows użyj polecenia `python`, np.: `python skaner_sieci.py -wol ...`.\nW systemie Linux (np. Debian) użyj polecenia `python3`, np.: `python3 skaner_sieci.py -wol ...`."
     # --- Koniec nowej logiki ---
 
     html_content = f"""
