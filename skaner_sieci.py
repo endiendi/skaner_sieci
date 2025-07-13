@@ -99,10 +99,31 @@ def zainstaluj_pakiet(nazwa_pakietu: str) -> bool:
         print(f"{Fore.GREEN}Biblioteka '{nazwa_pakietu}' została pomyślnie zainstalowana.{Style.RESET_ALL}")
         return True
     except subprocess.CalledProcessError as e:
-        print(f"{Fore.RED}Błąd podczas instalacji '{nazwa_pakietu}'.{Style.RESET_ALL}")
-        print(f"{Fore.RED}Komunikat błędu pip (stderr):{Style.RESET_ALL}\n{e.stderr.decode(errors='ignore')}")
-        print(f"{Fore.YELLOW}Możesz spróbować zainstalować ręcznie: {Style.BRIGHT}pip install {nazwa_pakietu}{Style.RESET_ALL}")
-        return False
+        stderr_output = e.stderr.decode(errors='ignore')
+        # Sprawdź, czy błąd jest spowodowany przez 'externally-managed-environment'
+        if "externally-managed-environment" in stderr_output:
+            print(f"{Fore.YELLOW}Wykryto błąd 'externally-managed-environment'. Jest to zabezpieczenie w nowszych dystrybucjach Linuksa.")
+            print(f"Próba ponownej instalacji z flagą '--break-system-packages'...{Style.RESET_ALL}")
+            try:
+                # Druga próba z flagą --break-system-packages
+                subprocess.run(
+                    [sys.executable, "-m", "pip", "install", nazwa_pakietu, "--break-system-packages"],
+                    check=True,
+                    capture_output=True
+                )
+                print(f"{Fore.GREEN}Biblioteka '{nazwa_pakietu}' została pomyślnie zainstalowana (z obejściem systemowym).{Style.RESET_ALL}")
+                return True
+            except subprocess.CalledProcessError as e2:
+                print(f"{Fore.RED}Druga próba instalacji '{nazwa_pakietu}' również nie powiodła się.{Style.RESET_ALL}")
+                print(f"{Fore.RED}Komunikat błędu pip (stderr):{Style.RESET_ALL}\n{e2.stderr.decode(errors='ignore')}")
+                print(f"{Fore.YELLOW}Możesz spróbować zainstalować ręcznie: {Style.BRIGHT}pip install {nazwa_pakietu} --break-system-packages{Style.RESET_ALL}")
+                return False
+        else:
+            # Oryginalna obsługa dla innych błędów instalacji
+            print(f"{Fore.RED}Błąd podczas instalacji '{nazwa_pakietu}'.{Style.RESET_ALL}")
+            print(f"{Fore.RED}Komunikat błędu pip (stderr):{Style.RESET_ALL}\n{stderr_output}")
+            print(f"{Fore.YELLOW}Możesz spróbować zainstalować ręcznie: {Style.BRIGHT}pip install {nazwa_pakietu}{Style.RESET_ALL}")
+            return False
     except FileNotFoundError:
         print(f"{Fore.RED}Błąd: Nie znaleziono polecenia '{sys.executable} -m pip'.{Style.RESET_ALL}")
         print(f"{Fore.YELLOW}Upewnij się, że Python i pip są poprawnie zainstalowane i dodane do ścieżki systemowej (PATH).{Style.RESET_ALL}")
