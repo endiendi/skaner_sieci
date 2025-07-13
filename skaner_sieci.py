@@ -828,6 +828,67 @@ def load_config() -> tuple[Optional[str], Optional[List[str]], Optional[bool]]:
     except Exception as e:
         print(f"Nieoczekiwany błąd podczas ładowania konfiguracji z {CONFIG_FILE}: {e}")
         return None, None, None
+def zapytaj_i_generuj_polecenie_wol(lista_urzadzen: List[DeviceInfo], siec_prefix: Optional[str]):
+    """
+    Pyta użytkownika, czy chce wygenerować polecenie Wake-on-LAN (WoL)
+    dla któregoś z urządzeń znalezionych w skanowaniu.
+
+    Args:
+        lista_urzadzen: Lista obiektów DeviceInfo ze zeskanowanymi urządzeniami.
+        siec_prefix: Prefiks skanowanej sieci (np. "192.168.1.").
+    """
+    # Sprawdź, czy w ogóle są jakieś urządzenia z adresem MAC
+    urzadzenia_z_mac = [d for d in lista_urzadzen if d.mac and d.mac != "Nieznany MAC"]
+    if not urzadzenia_z_mac:
+        return # Nie ma sensu pytać, jeśli nie ma MACów
+
+    try:
+        prompt_text = f"Czy chcesz wygenerować polecenie Wake-on-LAN (WoL) dla któregoś z urządzeń? ({Fore.LIGHTMAGENTA_EX}t/N{Style.RESET_ALL}): "
+        odpowiedz = custom_input_with_esc(prompt_text).lower().strip()
+
+        if not (odpowiedz.startswith('t') or odpowiedz.startswith('y')):
+            return
+
+        system_os = platform.system().lower()
+        python_command = "python3" if system_os in ["linux", "darwin"] else "python"
+        script_name = os.path.basename(__file__)
+
+        # Ustal adres broadcast. Jeśli prefiks jest znany, użyj go. W przeciwnym razie, użyj ogólnego.
+        broadcast_address = (siec_prefix + "255") if siec_prefix else "255.255.255.255"
+
+        while True:
+            lp_input_prompt = f"\nPodaj nr. Lp. urządzenia do wybudzenia (lub wpisz {Fore.LIGHTMAGENTA_EX}q{Style.RESET_ALL}, aby zakończyć): "
+            user_input = custom_input_with_esc(lp_input_prompt).strip().lower()
+            
+            if user_input == 'q':
+                print("Zakończono generowanie poleceń WoL.\n")
+                break
+
+            try:
+                lp_number = int(user_input)
+                if 1 <= lp_number <= len(lista_urzadzen):
+                    # Pobierz urządzenie, pamiętając o indeksowaniu od 0
+                    device = lista_urzadzen[lp_number - 1]
+                    
+                    if device.mac and device.mac != "Nieznany MAC":
+                        mac_address = device.mac
+                        polecenie_wol = f"{python_command} {script_name} -wol {mac_address} {broadcast_address}"
+                        
+                        print("\n" + "-"*60)
+                        print(f"{Fore.GREEN}Sugerowane polecenie Wake-on-LAN dla urządzenia {device.ip} ({device.hostname}):{Style.RESET_ALL}")
+                        print(f"{Style.BRIGHT}{polecenie_wol}{Style.RESET_ALL}")
+                        print(f"{Fore.YELLOW}Skopiuj i wklej powyższe polecenie do nowego terminala, aby je wykonać.{Style.RESET_ALL}")
+                        print(f"(Użyto adresu broadcast: {broadcast_address})")
+                        print("-" * 60)
+                    else:
+                        print(f"{Fore.YELLOW}Urządzenie o Lp. {lp_number} (IP: {device.ip}) nie ma znanego adresu MAC. Nie można wygenerować polecenia WoL.{Style.RESET_ALL}")
+                else:
+                    print(f"{Fore.RED}Nieprawidłowy numer Lp. '{lp_number}'. Podaj numer od 1 do {len(lista_urzadzen)}.{Style.RESET_ALL}")
+            except ValueError:
+                print(f"{Fore.RED}Nieprawidłowe wejście. Podaj numer Lp. lub 'q'.{Style.RESET_ALL}")
+
+    except (EOFError, KeyboardInterrupt):
+        obsluz_przerwanie_uzytkownika()
 
 def pobierz_prefixy_zdalne_vpn(nazwa_interfejsu_vpn: str) -> List[str]:
     """
@@ -4522,6 +4583,9 @@ if __name__ == "__main__":
 
         print(f"\nCałkowity czas skanowania i agregacji: {czas_trwania_sekundy_skanowania:.2f} sekund. Czyli {przelicz_sekundy_na_minuty_sekundy(round(czas_trwania_sekundy_skanowania))} min:sek")
         wyswietl_tekst_w_linii("-",DEFAULT_LINE_WIDTH,"",Fore.LIGHTCYAN_EX,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
+
+        # Zapytaj o generowanie polecenia WoL
+        zapytaj_i_generuj_polecenie_wol(lista_urzadzen_do_wyswietlenia, siec_prefix)
 
         # Obsługa generowania raportu HTML
         obsluz_generowanie_raportu_html(
