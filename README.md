@@ -42,9 +42,11 @@ W ramach nauki programowania — bardziej kopiuj-wklej i research w sieci oraz n
 1.  **Pobierz skrypt:** Zapisz plik `skaner_sieci.py` na swoim komputerze.
 2.  **Zainstaluj zależności (opcjonalnie, jeśli automatyczna instalacja zawiedzie):**
     Otwórz terminal lub wiersz polecenia i uruchom:
+
     ```bash
-    pip install requests psutil colorama
+    pip install requests psutil colorama readchar 
     ```
+    
     *Wskazówka:* Zaleca się używanie wirtualnego środowiska Python (`venv`).
 
 ## Użycie
@@ -99,6 +101,8 @@ W ramach nauki programowania — bardziej kopiuj-wklej i research w sieci oraz n
     ```bash
     python skaner_sieci.py -wol 00:85:2B:3C:3G:5E 192.168.1.255 7
     ```
+
+W systemach Linux, takich jak Debian, czasami musisz użyć polecenia python3 do wywołania skryptu Pythona. 
      
 4.  Skrypt spróbuje wykryć prefiks sieciowy. Zostaniesz zapytany, czy jest on poprawny. Możesz nacisnąć Enter, aby go zaakceptować, podać inny prefiks (np. `10.0.0.`) lub przerwać działanie (Ctrl+C).
 5.  Skrypt rozpocznie pingowanie zakresu adresów, a następnie wyświetli tabelę znalezionych urządzeń.

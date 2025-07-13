@@ -3451,6 +3451,12 @@ def zapisz_tabele_urzadzen_do_html(
     # ABY BYŁA DOSTĘPNA PODCZAS TWORZENIA F-STRINGA html_content.
     script_name_for_wol = html.escape(os.path.basename(__file__))
 
+    # --- Nowa logika do dynamicznego polecenia Pythona ---
+    system_os = platform.system().lower()
+    python_command_for_wol = "python3" if system_os in ["linux", "darwin"] else "python"
+    wol_help_text = f"W systemie {platform.system()} sugerowane jest użycie polecenia <code>{python_command_for_wol}</code>."
+    # --- Koniec nowej logiki ---
+
     html_content = f"""
 <!DOCTYPE html>
 <html lang="pl">
@@ -3496,6 +3502,14 @@ def zapisz_tabele_urzadzen_do_html(
         .wol-modal-content button {{ padding: 8px 15px; background-color: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer; }}
         .wol-modal-content button:hover {{ background-color: #45a049; }}
         #copyWolStatus {{ font-size: 0.9em; color: green; margin-top: 5px; }}
+    </style>
+    <style>
+        code {{
+            background-color: #e8e8e8;
+            padding: 2px 4px;
+            border-radius: 3px;
+            font-family: "Courier New", Courier, monospace;
+        }}
     </style>
 </head>
 <body>
@@ -3664,10 +3678,11 @@ def zapisz_tabele_urzadzen_do_html(
         <div class="wol-modal-content">
             <span class="wol-modal-close" onclick="closeWolModal()">&times;</span>
             <h2>Wyślij Pakiet Wake-on-LAN</h2>
-            <p>Aby wysłać pakiet Wake-on-LAN (WoL) do urządzenia z adresem MAC <strong id="wolMacAddress"></strong> (kierując na adres IP <strong id="wolIpAddress"></strong>), możesz użyć poniższego polecenia w terminalu, będąc w katalogu, w którym znajduje się skrypt:</p>
+            <p>Aby wysłać pakiet Wake-on-LAN (WoL) do urządzenia z adresem MAC <strong id="wolMacAddress"></strong> (kierując na adres IP <strong id="wolIpAddress"></strong>), użyj poniższego polecenia w terminalu, będąc w katalogu ze skryptem:</p>
             <input type="text" id="wolCommandInput" readonly>
             <button onclick="copyWolCommand()">Kopiuj</button>
             <p id="copyWolStatus"></p>
+            <p>%%WOL_HELP_TEXT%%</p>
             <p style="font-size:0.8em; color:#555;">Upewnij się, że urządzenie docelowe oraz jego karta sieciowa są skonfigurowane do odbierania pakietów WoL, a zapory sieciowe nie blokują portu (domyślnie 9 UDP).</p>
         </div>
     </div>
@@ -3851,7 +3866,7 @@ def zapisz_tabele_urzadzen_do_html(
 
             macDisplay.textContent = macAddress;
             ipDisplay.textContent = ipAddress; // Wyświetl IP w modalu
-            commandInput.value = 'python ' + SCRIPT_NAME_WOL + ' -wol ' + macAddress + ' ' + ipAddress; // Dodaj IP do polecenia
+            commandInput.value = '%%PYTHON_COMMAND_WOL%% ' + SCRIPT_NAME_WOL + ' -wol ' + macAddress + ' ' + ipAddress;
             modal.style.display = 'block';
             copyStatus.textContent = '';
         } 
@@ -3886,6 +3901,11 @@ def zapisz_tabele_urzadzen_do_html(
     rzeczywista_wartosc_js_script_name = f'"{script_name_for_wol}"'
     # Zamieniamy placeholder w html_content na rzeczywistą wartość
     html_content = html_content.replace('"%%PLACEHOLDER_SCRIPT_NAME_WOL%%"', rzeczywista_wartosc_js_script_name)
+
+    # Podstawienie wartości dla WoL, aby uniknąć problemów z f-stringiem
+    html_content = html_content.replace('%%WOL_HELP_TEXT%%', wol_help_text)
+    html_content = html_content.replace('%%PYTHON_COMMAND_WOL%%', python_command_for_wol)
+
     # --- Koniec obejścia ---
     
     # ... definicja html_content ...
