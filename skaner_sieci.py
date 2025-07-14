@@ -3517,6 +3517,9 @@ def zapisz_tabele_urzadzen_do_html(
         # DEFAULT_START_IP jest używane domyślnie w nowej funkcji
     )
 
+    # Ustal adres broadcast, który będzie używany w linkach WoL w raporcie HTML
+    broadcast_address = (siec_prefix + "255") if siec_prefix else "255.255.255.255"
+
     aktywne_kolumny = {k: v for k, v in KOLUMNY_TABELI.items() if k in kolumny_do_wyswietlenia}
     
     # Konwertuj listę kolumn do formatu JSON dla JavaScript
@@ -3662,8 +3665,7 @@ def zapisz_tabele_urzadzen_do_html(
         mac_html_content = html.escape(mac_display_val)
         if device.mac and device.mac != "Nieznany MAC": # Tylko jeśli MAC jest znany i nie jest to placeholder
             # Użyj device.mac (oryginalny, nieoczyszczony MAC, jeśli taki byłby problem)
-            # ale mac_display_val powinien być już poprawnym MACem, jeśli device.mac istnieje
-            mac_html_content = f'<a href="javascript:void(0);" onclick="showWolCommand(\'{html.escape(device.mac)}\', \'{html.escape(device.ip)}\')" title="Wyślij pakiet Wake-on-LAN">{html.escape(mac_display_val)}</a>'
+            mac_html_content = f'<a href="javascript:void(0);" onclick="showWolCommand(\'{html.escape(device.mac)}\', \'{html.escape(broadcast_address)}\')" title="Wyślij pakiet Wake-on-LAN">{html.escape(mac_display_val)}</a>'
 
 
         row_data_base = {
@@ -3755,7 +3757,7 @@ def zapisz_tabele_urzadzen_do_html(
         <div class="wol-modal-content">
             <span class="wol-modal-close" onclick="closeWolModal()">&times;</span>
             <h2>Wyślij Pakiet Wake-on-LAN</h2>
-            <p>Aby wysłać pakiet Wake-on-LAN (WoL) do urządzenia z adresem MAC <strong id="wolMacAddress"></strong> (kierując na adres IP <strong id="wolIpAddress"></strong>), użyj poniższego polecenia w terminalu, będąc w katalogu ze skryptem:</p>
+            <p>Aby wysłać pakiet Wake-on-LAN (WoL) do urządzenia z adresem MAC <strong id="wolMacAddress"></strong>, użyj poniższego polecenia w terminalu, będąc w katalogu ze skryptem:</p>
             <input type="text" id="wolCommandInput" readonly>
             <button onclick="copyWolCommand()">Kopiuj</button>
             <p id="copyWolStatus"></p>
@@ -3934,16 +3936,14 @@ def zapisz_tabele_urzadzen_do_html(
         const wolModal = document.getElementById('wolModal'); // Get modal element once
 
 
-        function showWolCommand(macAddress, ipAddress) { // Dodano ipAddress
+        function showWolCommand(macAddress, broadcastAddress) {
             const modal = document.getElementById('wolModal');
             const commandInput = document.getElementById('wolCommandInput');
             const macDisplay = document.getElementById('wolMacAddress');
-            const ipDisplay = document.getElementById('wolIpAddress'); // Nowy element dla IP
             const copyStatus = document.getElementById('copyWolStatus');
 
             macDisplay.textContent = macAddress;
-            ipDisplay.textContent = ipAddress; // Wyświetl IP w modalu
-            commandInput.value = '%%PYTHON_COMMAND_WOL%% ' + SCRIPT_NAME_WOL + ' -wol ' + macAddress + ' ' + ipAddress;
+            commandInput.value = '%%PYTHON_COMMAND_WOL%% ' + SCRIPT_NAME_WOL + ' -wol ' + macAddress + ' ' + broadcastAddress;
             modal.style.display = 'block';
             copyStatus.textContent = '';
         } 
