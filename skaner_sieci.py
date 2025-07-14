@@ -354,7 +354,7 @@ DEFAULT_COLUMNS_SENTINEL = object()
 # --- Konfiguracja ---
 
 # --- Konfiguracja Aktualizacji Skryptu ---
-SKRYPT_AKTUALNA_WERSJA = "0.0.7" # Zmień na aktualną wersję Twojego skryptu
+SKRYPT_AKTUALNA_WERSJA = "0.0.8" # Zmień na aktualną wersję Twojego skryptu
 URL_INFORMACJI_O_WERSJI = "https://raw.githubusercontent.com/endiendi/skaner_sieci/main/version_info.json"
 HISTORIA_SKANOWANIA_PLIK_TEMPLATE = "skan_historii_{prefix}.json"
 
@@ -724,26 +724,87 @@ def pobierz_informacje_o_najnowszej_wersji(url: str) -> Optional[Dict[str, str]]
         print(f"{Fore.RED}Błąd: Nie udało się sparsować informacji o wersji (niepoprawny JSON).{Style.RESET_ALL}")
         return None
 
-def pobierz_i_zapisz_aktualizacje(url_pobierania: str, nazwa_pliku_docelowego: str) -> bool:
-    """Pobiera plik z URL i zapisuje go lokalnie."""
-    if not REQUESTS_AVAILABLE:
-        return False # Już sprawdzane wcześniej, ale dla pewności
+def _utworz_i_uruchom_skrypt_aktualizacyjny(url_pobierania: str):
+    """
+    Tworzy i uruchamia pomocniczy skrypt 'update.py', który pobiera
+    aktualizację, nadpisuje bieżący skrypt i uruchamia go ponownie.
+    """
+    nazwa_skryptu_glownego = os.path.abspath(__file__)
+    oryginalne_argumenty = sys.argv
+
+    # Nazwa skryptu pomocniczego. Używam 'update.py' jako poprawnej nazwy.
+    nazwa_skryptu_aktualizacyjnego = "update.py"
+
+    # Kod skryptu pomocniczego
+    kod_aktualizatora = f"""
+import sys
+import os
+import time
+import requests
+import subprocess
+
+def pobierz_aktualizacje(url, nazwa_pliku):
+    print(f"Aktualizator: Pobieranie nowej wersji z {{url}}...")
     try:
-        print(f"{Fore.CYAN}Pobieranie aktualizacji z: {url_pobierania}...{Style.RESET_ALL}")
-        response = requests.get(url_pobierania, timeout=30, stream=True)
+        response = requests.get(url, timeout=30)
         response.raise_for_status()
-        with open(nazwa_pliku_docelowego, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        print(f"{Fore.GREEN}Aktualizacja została pomyślnie pobrana i zapisana jako: {nazwa_pliku_docelowego}{Style.RESET_ALL}")
-        print(f"{Fore.YELLOW}Aby użyć nowej wersji, zastąp stary plik skryptu tym nowo pobranym i uruchom skrypt ponownie.{Style.RESET_ALL}")
+        # Zapisz do pliku tymczasowego, aby uniknąć uszkodzenia w razie błędu
+        nazwa_pliku_tymczasowego = nazwa_pliku + ".new"
+        with open(nazwa_pliku_tymczasowego, 'wb') as f:
+            f.write(response.content)
+        # Zastąp stary plik nowym - to jest operacja atomowa na większości systemów
+        os.replace(nazwa_pliku_tymczasowego, nazwa_pliku)
+        print(f"Aktualizator: Pomyślnie nadpisano plik {{nazwa_pliku}}.")
         return True
-    except requests.exceptions.RequestException as e:
-        print(f"{Fore.RED}Błąd podczas pobierania aktualizacji: {e}{Style.RESET_ALL}")
+    except Exception as e:
+        print(f"Aktualizator: Błąd podczas pobierania lub zapisywania aktualizacji: {{e}}")
+        with open("update_error.log", "w") as f_err:
+            f_err.write(str(e))
         return False
-    except IOError as e:
-        print(f"{Fore.RED}Błąd podczas zapisywania aktualizacji do pliku '{nazwa_pliku_docelowego}': {e}{Style.RESET_ALL}")
-        return False
+
+if __name__ == "__main__":
+    url_pobierania = {repr(url_pobierania)}
+    nazwa_pliku_docelowego = {repr(nazwa_skryptu_glownego)}
+    oryginalne_argumenty = {repr(oryginalne_argumenty)}
+
+    print("Aktualizator: Uruchomiono proces aktualizacji...")
+    time.sleep(2) # Dajmy chwilę na zamknięcie głównego skryptu
+
+    if pobierz_aktualizacje(url_pobierania, nazwa_pliku_docelowego):
+        print("Aktualizator: Aktualizacja zakończona. Ponowne uruchamianie skryptu w tym samym oknie...")
+        try:
+            # Użyj os.execv, aby zastąpić bieżący proces (update.py) nowym (skaner_sieci.py),
+            # dziedzicząc to samo okno konsoli.
+            os.execv(sys.executable, [sys.executable] + oryginalne_argumenty)
+        except Exception as e:
+            print(f"Aktualizator: Nie udało się ponownie uruchomić skryptu: {{e}}")
+            # Jeśli execv zawiedzie, skrypt będzie kontynuował i się zakończy.
+    else:
+        print("Aktualizator: Aktualizacja nie powiodła się. Proszę zaktualizować ręcznie.")
+    
+    # Usuń skrypt aktualizatora po zakończeniu
+    try:
+        # Ten kod nigdy się nie wykona, jeśli os.execv się powiedzie,
+        # co jest w porządku. Zostawiamy go jako fallback na wypadek błędu execv
+        # lub nieudanej aktualizacji.
+        os.remove(__file__) 
+    except OSError as e:
+        print(f"Aktualizator: Nie udało się usunąć skryptu pomocniczego: {{e}}")
+
+    sys.exit(0)
+"""
+    try:
+        with open(nazwa_skryptu_aktualizacyjnego, "w", encoding="utf-8") as f:
+            f.write(kod_aktualizatora.strip())
+
+        # Zastąp bieżący proces skryptem aktualizacyjnym.
+        # To sprawi, że 'update.py' uruchomi się w tym samym oknie konsoli.
+        print(f"{Fore.CYAN}Uruchamianie procesu aktualizacji... Przekazywanie kontroli do aktualizatora.{Style.RESET_ALL}")
+        time.sleep(1) # Dajmy użytkownikowi chwilę na przeczytanie komunikatu
+        os.execv(sys.executable, [sys.executable, nazwa_skryptu_aktualizacyjnego])
+
+    except Exception as e:
+        print(f"{Fore.RED}Nie udało się utworzyć lub uruchomić skryptu aktualizacyjnego: {e}{Style.RESET_ALL}")
 
 def sprawdz_i_zaproponuj_aktualizacje():
     """Główna funkcja sprawdzająca wersję i proponująca aktualizację."""
@@ -765,15 +826,9 @@ def sprawdz_i_zaproponuj_aktualizacje():
             print(f"{Fore.GREEN}Dostępna jest nowa wersja skryptu: {najnowsza_wersja_str}!{Style.RESET_ALL}")
             print(f"{Fore.CYAN}Zmiany w nowej wersji: {changelog}{Style.RESET_ALL}")
             try:
-                odpowiedz = custom_input_with_esc(f"Czy chcesz pobrać najnowszą wersję teraz? ({Fore.LIGHTMAGENTA_EX}t/N{Style.RESET_ALL}{Fore.YELLOW}): ").lower().strip()
+                odpowiedz = custom_input_with_esc(f"Czy chcesz pobrać najnowszą wersję teraz? {Fore.YELLOW}({Fore.LIGHTMAGENTA_EX}t/N{Style.RESET_ALL}{Fore.YELLOW}): ").lower().strip()
                 if odpowiedz.startswith('t') or odpowiedz.startswith('y'):
-                    nazwa_bazowa, rozszerzenie = os.path.splitext(os.path.basename(__file__))
-                    nazwa_nowego_pliku = f"{nazwa_bazowa}_v{najnowsza_wersja_str.replace('.', '_')}{rozszerzenie}"
-                    if pobierz_i_zapisz_aktualizacje(url_pobierania, nazwa_nowego_pliku):
-                        # Można tu dodać sugestię, aby użytkownik zakończył bieżący skrypt
-                        print(f"{Fore.CYAN}Możesz teraz zakończyć działanie tego skryptu ({Fore.LIGHTMAGENTA_EX}Ctrl+C{Style.RESET_ALL}) i uruchomić nową wersję.{Style.RESET_ALL}")
-                    else:
-                        print(f"{Fore.RED}Pobieranie aktualizacji nie powiodło się.{Style.RESET_ALL}")
+                    _utworz_i_uruchom_skrypt_aktualizacyjny(url_pobierania)
                 else:
                     print("Pobieranie aktualizacji pominięte.")
             except (EOFError, KeyboardInterrupt):
