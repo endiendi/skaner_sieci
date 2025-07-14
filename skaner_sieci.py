@@ -242,7 +242,7 @@ def sprawdz_i_zainstaluj_biblioteke(
             prompt_text = (
                 f"{Fore.YELLOW}Biblioteka '{nazwa_biblioteki}' nie jest zainstalowana. "
                 f"Bez niej: {komunikat_ostrzezenia_specyficzny}\n"
-                f"Czy chcesz spróbować zainstalować ją teraz? ({Fore.LIGHTMAGENTA_EX}t/N{Style.RESET_ALL}{Fore.YELLOW}){Style.RESET_ALL}"
+                f"Czy chcesz spróbować zainstalować ją teraz? {Fore.YELLOW}({Fore.LIGHTMAGENTA_EX}t/N{Style.RESET_ALL}{Fore.YELLOW}){Style.RESET_ALL}"
             )
             odpowiedz = custom_input_with_esc(prompt_text).lower().strip()
             if odpowiedz.startswith('t') or odpowiedz.startswith('y'): # Tylko 't' lub 'y' inicjuje instalację             
@@ -826,7 +826,7 @@ def sprawdz_i_zaproponuj_aktualizacje():
             print(f"{Fore.GREEN}Dostępna jest nowa wersja skryptu: {najnowsza_wersja_str}!{Style.RESET_ALL}")
             print(f"{Fore.CYAN}Zmiany w nowej wersji: {changelog}{Style.RESET_ALL}")
             try:
-                odpowiedz = custom_input_with_esc(f"Czy chcesz pobrać najnowszą wersję teraz? {Fore.YELLOW}({Fore.LIGHTMAGENTA_EX}t/N{Style.RESET_ALL}{Fore.YELLOW}): ").lower().strip()
+                odpowiedz = custom_input_with_esc(f"Czy chcesz pobrać najnowszą wersję teraz? {Fore.YELLOW}({Fore.LIGHTMAGENTA_EX}t/N{Style.RESET_ALL}{Fore.YELLOW}){Style.RESET_ALL}: ").lower().strip()
                 if odpowiedz.startswith('t') or odpowiedz.startswith('y'):
                     _utworz_i_uruchom_skrypt_aktualizacyjny(url_pobierania)
                 else:
@@ -900,7 +900,7 @@ def zapytaj_i_generuj_polecenie_wol(lista_urzadzen: List[DeviceInfo], siec_prefi
         return # Nie ma sensu pytać, jeśli nie ma MACów
 
     try:
-        prompt_text = f"Czy chcesz wygenerować polecenie Wake-on-LAN (WoL) dla któregoś z urządzeń? ({Fore.LIGHTMAGENTA_EX}t/N{Style.RESET_ALL}): "
+        prompt_text = f"Czy chcesz wygenerować polecenie Wake-on-LAN (WoL) dla któregoś z urządzeń? {Fore.YELLOW}({Fore.LIGHTMAGENTA_EX}t/N{Style.RESET_ALL}{Fore.YELLOW}){Style.RESET_ALL}: "
         odpowiedz = custom_input_with_esc(prompt_text).lower().strip()
 
         if not (odpowiedz.startswith('t') or odpowiedz.startswith('y')):
@@ -939,7 +939,7 @@ def zapytaj_i_generuj_polecenie_wol(lista_urzadzen: List[DeviceInfo], siec_prefi
                         print("-" * 60)
 
                         # Zapytaj, czy wysłać pakiet WoL od razu
-                        prompt_wake_up = f"Czy chcesz wybudzić to urządzenie teraz? ({Fore.LIGHTMAGENTA_EX}T/n{Style.RESET_ALL}): "
+                        prompt_wake_up = f"Czy chcesz wybudzić to urządzenie teraz? {Fore.YELLOW}({Fore.LIGHTMAGENTA_EX}T/n{Style.RESET_ALL}{Fore.YELLOW}){Style.RESET_ALL}: "
                         odpowiedz_wybudz = custom_input_with_esc(prompt_wake_up).lower().strip()
 
                         if not odpowiedz_wybudz or odpowiedz_wybudz.startswith('t') or odpowiedz_wybudz.startswith('y'):
@@ -2848,7 +2848,7 @@ def pobierz_i_zweryfikuj_prefiks(cmd_prefix: Optional[str] = None) -> Optional[s
             if extracted_prefix:
                 print(f"{Fore.CYAN}Podano pełny adres IP '{cmd_prefix_stripped}' jako argument -p.{Style.RESET_ALL}")
                 try:
-                    prompt_text = f"Czy chcesz skanować sieć z prefiksem '{extracted_prefix}'? ({Fore.LIGHTMAGENTA_EX}T/n{Style.RESET_ALL}): "
+                    prompt_text = f"Czy chcesz skanować sieć z prefiksem '{extracted_prefix}'? {Fore.YELLOW}({Fore.LIGHTMAGENTA_EX}T/n{Style.RESET_ALL}{Fore.YELLOW}){Style.RESET_ALL}: "
                     odp = custom_input_with_esc(prompt_text).lower().strip()
                     wyczysc_wskazana_ilosc_linii_konsoli()
                     if not odp or odp.startswith('t') or odp.startswith('y'):
@@ -2902,7 +2902,7 @@ def pobierz_i_zweryfikuj_prefiks(cmd_prefix: Optional[str] = None) -> Optional[s
                     if extracted_prefix:
                         print(f"{Fore.CYAN}Podano pełny adres IP '{odpowiedz_uzytkownika}'.{Style.RESET_ALL}")
                         try:
-                            prompt_confirm_ip = f"Czy chcesz skanować sieć z prefiksem '{extracted_prefix}'? ({Fore.LIGHTMAGENTA_EX}T/n{Style.RESET_ALL}): "
+                            prompt_confirm_ip = f"Czy chcesz skanować sieć z prefiksem '{extracted_prefix}'? {Fore.YELLOW}({Fore.LIGHTMAGENTA_EX}T/n{Style.RESET_ALL}{Fore.YELLOW}){Style.RESET_ALL}: "
                             odp_confirm = custom_input_with_esc(prompt_confirm_ip).lower().strip()
                             wyczysc_wskazana_ilosc_linii_konsoli()
                             if not odp_confirm or odp_confirm.startswith('t') or odp_confirm.startswith('y'):
@@ -2952,7 +2952,7 @@ def pobierz_i_zweryfikuj_prefiks(cmd_prefix: Optional[str] = None) -> Optional[s
                     if extracted_prefix:
                         print(f"{Fore.CYAN}Podano pełny adres IP '{odpowiedz_uzytkownika}'.{Style.RESET_ALL}")
                         try:
-                            prompt_confirm_ip = f"Czy chcesz skanować sieć z prefiksem '{extracted_prefix}'? ({Fore.LIGHTMAGENTA_EX}T/n{Style.RESET_ALL}): "
+                            prompt_confirm_ip = f"Czy chcesz skanować sieć z prefiksem '{extracted_prefix}'? {Fore.YELLOW}({Fore.LIGHTMAGENTA_EX}T/n{Style.RESET_ALL}{Fore.YELLOW}){Style.RESET_ALL}: "
                             odp_confirm = custom_input_with_esc(prompt_confirm_ip).lower().strip()
                             wyczysc_wskazana_ilosc_linii_konsoli()
                             if not odp_confirm or odp_confirm.startswith('t') or odp_confirm.startswith('y'):
@@ -4291,7 +4291,7 @@ def zapytaj_czy_zapisac_raport_html(
         )
         
         prompt_text = (
-            f"Czy chcesz zapisać raport HTML? Proponowana nazwa to: {Fore.CYAN}{proponowana_pelna_nazwa}{Style.RESET_ALL} ({Fore.LIGHTMAGENTA_EX}T/n{Style.RESET_ALL}) lub podaj własną bazową nazwę: "
+            f"Czy chcesz zapisać raport HTML? Proponowana nazwa to: {Fore.CYAN}{proponowana_pelna_nazwa}{Style.RESET_ALL} {Fore.YELLOW}({Fore.LIGHTMAGENTA_EX}T/n{Style.RESET_ALL}{Fore.YELLOW}){Style.RESET_ALL} lub podaj własną bazową nazwę: "
             # f"({Fore.LIGHTMAGENTA_EX}T/Enter{Style.RESET_ALL}=użyj proponowanej | "
             # f"{Fore.LIGHTMAGENTA_EX}N{Style.RESET_ALL}=nie zapisuj | "
             # f"{Fore.LIGHTMAGENTA_EX}inna nazwa{Style.RESET_ALL}=podaj własną bazową nazwę): "
@@ -4344,7 +4344,7 @@ def zapytaj_i_otworz_raport_html(sciezka_do_pliku_html: Optional[str]) -> None:
         return
 
     try:
-        prompt_text = f"Czy chcesz otworzyć raport HTML ({os.path.basename(sciezka_do_pliku_html)}) w przeglądarce? ({Fore.LIGHTMAGENTA_EX}T/n{Style.RESET_ALL}): "
+        prompt_text = f"Czy chcesz otworzyć raport HTML ({os.path.basename(sciezka_do_pliku_html)}) w przeglądarce? {Fore.YELLOW}({Fore.LIGHTMAGENTA_EX}T/n{Style.RESET_ALL}{Fore.YELLOW}){Style.RESET_ALL}: "
         odpowiedz_otwarcie = custom_input_with_esc(prompt_text).lower().strip()
         # Jeśli użytkownik naciśnie Enter (pusta odpowiedź) LUB wpisze 't'/'y'
         if not odpowiedz_otwarcie or odpowiedz_otwarcie.startswith('t') or odpowiedz_otwarcie.startswith('y'):
