@@ -1,7 +1,7 @@
 {
-  "latest_version": "0.0.7",
+  "latest_version": "0.0.8",
   "name": "skaner_sieci",
   "description": "Skaner sieci komputerowej",
   "download_url": "https://raw.githubusercontent.com/endiendi/skaner_sieci/refs/heads/main/skaner_sieci.py",
-  "changelog": "Dodano zapis konfiguracji menu."
+  "changelog": "Zmieniony został sposób aktualizacji skryptu. Teraz skrypt sprawdza swoją wersję i porównuje ją z wersją dostępną w pliku version_info.json. Jeśli jest dostępna nowsza wersja, użytkownik zostanie o tym poinformowany.",
 }
