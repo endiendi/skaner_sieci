@@ -227,7 +227,8 @@ def sprawdz_i_zainstaluj_biblioteke(
     komunikat_ostrzezenia_specyficzny: str,
     komunikat_sukcesu_instalacji: str,
     komunikat_niepowodzenia_instalacji: str,
-    komunikat_pominieto_instalacje: str
+    komunikat_pominieto_instalacje: str,
+    uzyj_input_zamiast_custom: bool = False
 ) -> bool:
     """
     Sprawdza, czy biblioteka jest dostępna. Jeśli nie, pyta użytkownika o instalację.
@@ -242,9 +243,13 @@ def sprawdz_i_zainstaluj_biblioteke(
             prompt_text = (
                 f"{Fore.YELLOW}Biblioteka '{nazwa_biblioteki}' nie jest zainstalowana. "
                 f"Bez niej: {komunikat_ostrzezenia_specyficzny}\n"
-                f"Czy chcesz spróbować zainstalować ją teraz? {Fore.YELLOW}({Fore.LIGHTMAGENTA_EX}t/N{Style.RESET_ALL}{Fore.YELLOW}){Style.RESET_ALL}"
+                f"Czy chcesz spróbować zainstalować ją teraz? {Fore.YELLOW}({Fore.LIGHTMAGENTA_EX}t/N{Style.RESET_ALL}{Fore.YELLOW}){Style.RESET_ALL}: "
             )
-            odpowiedz = custom_input_with_esc(prompt_text).lower().strip()
+            # Użyj standardowego input() jeśli flaga jest ustawiona, w przeciwnym razie użyj wersji z obsługą Esc
+            if uzyj_input_zamiast_custom:
+                odpowiedz = input(prompt_text).lower().strip()
+            else:
+                odpowiedz = custom_input_with_esc(prompt_text).lower().strip()
             if odpowiedz.startswith('t') or odpowiedz.startswith('y'): # Tylko 't' lub 'y' inicjuje instalację             
                 if zainstaluj_pakiet(nazwa_biblioteki):
                     print(komunikat_sukcesu_instalacji)
@@ -280,7 +285,8 @@ except ImportError:
         komunikat_ostrzezenia_specyficzny="Jest ona potrzebna do obsługi klawisza ESC jako przerwania w trakcie wpisywania danych. Bez niej, tylko Ctrl+C będzie przerywać program w tych miejscach.",
         komunikat_sukcesu_instalacji=f"{Fore.CYAN}Instalacja 'readchar' zakończona. Uruchom skrypt ponownie, aby włączyć obsługę ESC.{Style.RESET_ALL}",
         komunikat_niepowodzenia_instalacji="Instalacja 'readchar' nie powiodła się. Obsługa ESC w promptach będzie wyłączona.",
-        komunikat_pominieto_instalacje="Instalacja 'readchar' pominięta. Obsługa ESC w promptach będzie wyłączona."
+        komunikat_pominieto_instalacje="Instalacja 'readchar' pominięta. Obsługa ESC w promptach będzie wyłączona.",
+        uzyj_input_zamiast_custom=True # Wymuś użycie standardowego input() dla tego sprawdzenia
     )
     # Jeśli skrypt dotrze tutaj po wywołaniu, oznacza to, że readchar nie został zainstalowany lub instalacja nie powiodła się.
     # READCHAR_AVAILABLE_FOR_INPUT jest już False. _readchar_module jest None. _readchar_key_module jest instancją _DummyReadcharKeys.
