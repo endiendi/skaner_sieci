@@ -700,9 +700,13 @@ def pobierz_informacje_o_najnowszej_wersji(url: str) -> Optional[Dict[str, str]]
         response = requests.get(url, timeout=10)
         response.raise_for_status()
         return response.json()
+    except requests.exceptions.JSONDecodeError as e:
+        print(f"{Fore.RED}Błąd: Nie udało się przetworzyć informacji o wersji (niepoprawny format pliku JSON).{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}Szczegóły błędu: {e}{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}Sprawdź, czy plik pod adresem '{url}' jest poprawnym plikiem JSON.{Style.RESET_ALL}")
+        return None
     except requests.exceptions.RequestException as e:
-        # print(f"{Fore.YELLOW}Nie udało się pobrać informacji o wersji: {e}{Style.RESET_ALL}")
-                # Dodatkowa, bardziej szczegółowa informacja dla problemów z DNS
+        # Dodatkowa, bardziej szczegółowa informacja dla problemów z DNS
         is_name_resolution_error = False        
         if NameResolutionErrorType: # Sprawdź, czy typ błędu jest dostępny
             # Sprawdź, czy przyczyna błędu (często w e.args[0].reason dla ConnectionError) to NameResolutionError
@@ -718,10 +722,7 @@ def pobierz_informacje_o_najnowszej_wersji(url: str) -> Optional[Dict[str, str]]
             print(f"{Fore.YELLOW}Nie udało się pobrać informacji o wersji.{Style.RESET_ALL}") # Uproszczony komunikat
             print(f"{Fore.YELLOW}Przyczyna: Problem z tłumaczeniem nazwy hosta (DNS). Sprawdź połączenie internetowe i konfigurację DNS.{Style.RESET_ALL}")
         else:
-            print(f"{Fore.YELLOW}Nie udało się pobrać informacji o wersji: {e}{Style.RESET_ALL}") # Ogólny błąd RequestException, jeśli to nie DNS
-        return None
-    except json.JSONDecodeError:
-        print(f"{Fore.RED}Błąd: Nie udało się sparsować informacji o wersji (niepoprawny JSON).{Style.RESET_ALL}")
+            print(f"{Fore.YELLOW}Nie udało się pobrać informacji o wersji (błąd sieci): {e}{Style.RESET_ALL}")
         return None
 
 def _utworz_i_uruchom_skrypt_aktualizacyjny(url_pobierania: str):
