@@ -354,8 +354,9 @@ DEFAULT_COLUMNS_SENTINEL = object()
 # --- Konfiguracja ---
 
 # --- Konfiguracja Aktualizacji Skryptu ---
-SKRYPT_AKTUALNA_WERSJA = "0.0.6" # Zmień na aktualną wersję Twojego skryptu
+SKRYPT_AKTUALNA_WERSJA = "0.0.7" # Zmień na aktualną wersję Twojego skryptu
 URL_INFORMACJI_O_WERSJI = "https://raw.githubusercontent.com/endiendi/skaner_sieci/main/version_info.json"
+HISTORIA_SKANOWANIA_PLIK_TEMPLATE = "skan_historii_{prefix}.json"
 
 # Prefiksy adresów multicast, które chcemy wykluczyć ze skanowania
 MULTICAST_PREFIXES: List[str] = ["224.", "239.", "ff02."]
@@ -828,6 +829,7 @@ def load_config() -> tuple[Optional[str], Optional[List[str]], Optional[bool]]:
     except Exception as e:
         print(f"Nieoczekiwany błąd podczas ładowania konfiguracji z {CONFIG_FILE}: {e}")
         return None, None, None
+
 def zapytaj_i_generuj_polecenie_wol(lista_urzadzen: List[DeviceInfo], siec_prefix: Optional[str]):
     """
     Pyta użytkownika, czy chce wygenerować polecenie Wake-on-LAN (WoL)
@@ -880,6 +882,15 @@ def zapytaj_i_generuj_polecenie_wol(lista_urzadzen: List[DeviceInfo], siec_prefi
                         print(f"{Fore.YELLOW}Skopiuj i wklej powyższe polecenie do nowego terminala, aby je wykonać.{Style.RESET_ALL}")
                         print(f"(Użyto adresu broadcast: {broadcast_address})")
                         print("-" * 60)
+
+                        # Zapytaj, czy wysłać pakiet WoL od razu
+                        prompt_wake_up = f"Czy chcesz wybudzić to urządzenie teraz? ({Fore.LIGHTMAGENTA_EX}T/n{Style.RESET_ALL}): "
+                        odpowiedz_wybudz = custom_input_with_esc(prompt_wake_up).lower().strip()
+
+                        if not odpowiedz_wybudz or odpowiedz_wybudz.startswith('t') or odpowiedz_wybudz.startswith('y'):
+                            wyslij_wol_packet(mac_address, broadcast_address)
+                        else:
+                            print("Pominięto wysyłanie pakietu WoL.")
                     else:
                         print(f"{Fore.YELLOW}Urządzenie o Lp. {lp_number} (IP: {device.ip}) nie ma znanego adresu MAC. Nie można wygenerować polecenia WoL.{Style.RESET_ALL}")
                 else:
@@ -3064,6 +3075,7 @@ def wyswietl_tabele_urzadzen(
             oznaczenia = []
             if device.is_host: oznaczenia.append("(Ty)")
             if device.is_gateway: oznaczenia.append("(Brama)")
+            if device.source == "Historia": oznaczenia.append("(Historia)")
             if device.source == "ARP": oznaczenia.append("(ARP Only)") # Dodano oznaczenie ARP
             oznaczenie_str = " ".join(oznaczenia)
 
@@ -3094,7 +3106,9 @@ def wyswietl_tabele_urzadzen(
 
                     # Logika kolorowania z priorytetami
                     color = Fore.WHITE # Domyślny kolor
-                    if device.dns_lookup_raw_result == "Błąd" or device.guessed_os == "Błąd OS":
+                    if device.source == 'Historia':
+                        color = Fore.LIGHTBLACK_EX
+                    elif device.dns_lookup_raw_result == "Błąd" or device.guessed_os == "Błąd OS":
                         color = Fore.RED
                     elif device.source == "ARP": # Tylko ARP (nie odpowiedział na ping)
                         color = Fore.MAGENTA
@@ -3630,6 +3644,7 @@ def zapisz_tabele_urzadzen_do_html(
         oznaczenia = []
         if device.is_host: oznaczenia.append("(Ty)")
         if device.is_gateway: oznaczenia.append("(Brama)")
+        if device.source == "Historia": oznaczenia.append("(Historia)")
         if device.source == "ARP": oznaczenia.append("(ARP Only)")
         oznaczenie_str = " ".join(oznaczenia)
 
@@ -3991,6 +4006,102 @@ def zapisz_tabele_urzadzen_do_html(
     except Exception as e:
         print(f"{red_color}Nieoczekiwany błąd podczas zapisu pliku HTML: {e}{reset_color}")
         return None # Zwróć None w przypadku błędu
+    
+def _generuj_nazwe_pliku_historii(siec_prefix: str) -> str:
+    """Generuje nazwę pliku historii na podstawie prefiksu sieci."""
+    prefix_dla_nazwy = siec_prefix.rstrip('.').replace('.', '_')
+    return HISTORIA_SKANOWANIA_PLIK_TEMPLATE.format(prefix=prefix_dla_nazwy)
+
+def wczytaj_historie_skanowania(siec_prefix: str) -> List[DeviceInfo]:
+    """Wczytuje historię skanowania z pliku JSON dla danego prefiksu sieci."""
+    nazwa_pliku = _generuj_nazwe_pliku_historii(siec_prefix)
+    urzadzenia_z_historii: List[DeviceInfo] = []
+    
+    if not os.path.exists(nazwa_pliku):
+        print(f"{Fore.CYAN}Plik historii '{nazwa_pliku}' nie istnieje. To prawdopodobnie pierwsze skanowanie tej sieci.{Style.RESET_ALL}")
+        return urzadzenia_z_historii
+
+    print(f"Wczytywanie historii skanowania z pliku: {nazwa_pliku}...")
+    try:
+        with open(nazwa_pliku, "r", encoding="utf-8") as f:
+            dane_z_pliku = json.load(f)
+        
+        for wpis in dane_z_pliku:
+            # Tworzymy obiekt DeviceInfo, ustawiając odpowiednie pola
+            device = DeviceInfo(
+                ip=wpis.get("ip", "Brak IP"),
+                mac=wpis.get("mac"),
+                hostname=wpis.get("hostname", "Nieznana (Historia)"),
+                source="Historia", # Kluczowe oznaczenie
+                # Pozostałe pola mają wartości domyślne, bo urządzenie jest offline
+                open_ports=[],
+                guessed_os="Nieznany (Historia)",
+                oui_vendor=wpis.get("oui_vendor", "Nieznany"),
+                hostname_resolved_dns=wpis.get("hostname_resolved_dns"),
+                hostname_from_file=wpis.get("hostname_from_file")
+            )
+            urzadzenia_z_historii.append(device)
+        
+        print(f"{Fore.GREEN}Pomyślnie wczytano {len(urzadzenia_z_historii)} urządzeń z historii.{Style.RESET_ALL}")
+
+    except json.JSONDecodeError:
+        print(f"{Fore.RED}Błąd: Plik historii '{nazwa_pliku}' jest uszkodzony (niepoprawny JSON).{Style.RESET_ALL}")
+    except IOError as e:
+        print(f"{Fore.RED}Błąd odczytu pliku historii '{nazwa_pliku}': {e}{Style.RESET_ALL}")
+    except Exception as e:
+        print(f"{Fore.RED}Nieoczekiwany błąd podczas wczytywania historii: {e}{Style.RESET_ALL}")
+        
+    return urzadzenia_z_historii
+
+def zapisz_historie_skanowania(lista_urzadzen_do_zapisu: List[DeviceInfo], siec_prefix: str):
+    """
+    Zapisuje kluczowe, trwałe informacje o wszystkich urządzeniach (aktywnych i historycznych) do pliku.
+    Zapisywane są tylko niezbędne dane, aby plik był zwięzły.
+    """
+    nazwa_pliku = _generuj_nazwe_pliku_historii(siec_prefix)
+    
+    dane_do_zapisu = []
+    zapisane_mac_set = set()
+
+    # Sortowanie nie jest ściśle konieczne, ale daje pewność, że aktywne wersje
+    # (jeśli jakimś cudem duplikat by istniał) mają priorytet.
+    # Główną logiką jest `zapisane_mac_set`.
+    lista_urzadzen_do_zapisu.sort(key=lambda d: d.source == 'Historia') # Aktywne na początku
+
+    for d in lista_urzadzen_do_zapisu:
+        # Pomiń urządzenia bez adresu MAC lub te, które już zostały dodane
+        if not d.mac or d.mac in zapisane_mac_set:
+            continue
+
+        # Tworzymy "odchudzony" słownik, zawierający tylko trwałe dane.
+        # To odpowiada na Twoją uwagę o niepotrzebnym zapisywaniu wszystkiego.
+        wpis_historii = {
+            "ip": d.ip,
+            "mac": d.mac,
+            "hostname": d.hostname,
+            "oui_vendor": d.oui_vendor,
+            "hostname_resolved_dns": d.hostname_resolved_dns,
+            "hostname_from_file": d.hostname_from_file
+        }
+        dane_do_zapisu.append(wpis_historii)
+        zapisane_mac_set.add(d.mac)
+
+
+    if not dane_do_zapisu:
+        # Zmieniono komunikat, aby odzwierciedlał, że mogły być urządzenia, ale bez MAC
+        print(f"{Fore.YELLOW}Brak unikalnych urządzeń z adresem MAC do zapisania w historii.{Style.RESET_ALL}")
+        return
+
+    print(f"Zapisywanie historii {len(dane_do_zapisu)} urządzeń do pliku: {nazwa_pliku}...")
+    try:
+        with open(nazwa_pliku, "w", encoding="utf-8") as f:
+            json.dump(dane_do_zapisu, f, indent=4, ensure_ascii=False)
+        print(f"{Fore.GREEN}Pomyślnie zapisano historię skanowania.{Style.RESET_ALL}")
+    except IOError as e:
+        print(f"{Fore.RED}Błąd zapisu pliku historii '{nazwa_pliku}': {e}{Style.RESET_ALL}")
+    except Exception as e:
+        print(f"{Fore.RED}Nieoczekiwany błąd podczas zapisu historii: {e}{Style.RESET_ALL}")
+
 
 def obsluz_generowanie_raportu_html(
     lista_urzadzen_do_wyswietlenia: List[DeviceInfo],
@@ -4053,6 +4164,7 @@ def wyswietl_legende_kolorow_urzadzen(line_width: int = DEFAULT_LINE_WIDTH) -> N
     print(f"  {Fore.GREEN}Zielony{Style.RESET_ALL} : IP potwierdzone ping i ARP. Urządzenie ze znanym producentem (na podstawie adresu MAC - OUI).")
     print(f"  {Fore.RED}Czerwony{Style.RESET_ALL}: Wystąpił błąd podczas pobierania nazwy hosta lub identyfikacji OS.")
     print(f"  {Fore.WHITE}Biały{Style.RESET_ALL}   : IP potwierdzone ping i ARP, ale nieznane nazwa hosta i nieznany producent, brak błędów.")
+    print(f"  {Fore.LIGHTBLACK_EX}Szary{Style.RESET_ALL}   : Urządzenie wczytane z historii (obecnie offline).")
     # Można dodać linię końcową, jeśli chcesz
     # print("-" * line_width)
 
@@ -4496,6 +4608,9 @@ if __name__ == "__main__":
                 print(f"{Fore.RED}Błąd: Parametr -p wymagał automatycznego wykrycia prefiksu, ale nie udało się go ustalić. Zakończono.{Style.RESET_ALL}")
                 sys.exit(1)
         elif isinstance(cmd_prefix_arg, str): # Jeśli podano konkretny prefiks jako string
+            # Jeśli podano pełny adres IP, wyodrębnij prefiks
+            if is_full_ip_address(cmd_prefix_arg):
+                cmd_prefix_arg = get_prefix_from_ip(cmd_prefix_arg)           
             siec_prefix = pobierz_i_zweryfikuj_prefiks(cmd_prefix=cmd_prefix_arg)
         else: # cmd_prefix_arg jest None (nie podano -p), użyj logiki interaktywnej/z configu
             if last_prefix_loaded: # Użyj last_prefix_loaded zamiast last_prefix_loaded_from_config dla spójności
@@ -4513,6 +4628,10 @@ if __name__ == "__main__":
         if siec_prefix is None: # Jeśli po wszystkich próbach prefiks nadal jest None
             print(f"{Fore.RED}Nie udało się ustalić prefiksu sieciowego. Zakończono.{Style.RESET_ALL}")
             sys.exit(1)
+
+        # --- Wczytywanie historii skanowania ---
+        urzadzenia_z_historii = wczytaj_historie_skanowania(siec_prefix)
+        # --- Koniec wczytywania historii ---
 
         # --- Wybór kolumn ---
         zapisz_konfiguracje_menu = False # Flaga, czy zapisać konfigurację menu
@@ -4558,26 +4677,39 @@ if __name__ == "__main__":
             niestandardowe_porty_serwera_mapa
         )
 
-        lista_urzadzen_do_wyswietlenia: List[DeviceInfo] = []
+        aktywne_urzadzenia: List[DeviceInfo] = []
         wyniki_skanowania_portow_do_legendy: Dict[str, List[int]] = {}
         os_cache_wyniki_do_legendy: Dict[str, str] = {}
         czas_trwania_sekundy_skanowania: float = 0.0
 
         if wynik_skanowania_i_agregacji is False:
             print(f"{Fore.YELLOW}Nie zebrano informacji o żadnych urządzeniach lub wystąpił błąd podczas skanowania.{Style.RESET_ALL}")
-            lista_urzadzen_do_wyswietlenia = []
+            aktywne_urzadzenia = []
             wyniki_skanowania_portow_do_legendy = {}
             os_cache_wyniki_do_legendy = {}
             czas_trwania_sekundy_skanowania = 0.0
         else:
-            lista_urzadzen_do_wyswietlenia, wyniki_skanowania_portow_do_legendy, os_cache_wyniki_do_legendy, czas_trwania_sekundy_skanowania = wynik_skanowania_i_agregacji
+            aktywne_urzadzenia, wyniki_skanowania_portow_do_legendy, os_cache_wyniki_do_legendy, czas_trwania_sekundy_skanowania = wynik_skanowania_i_agregacji
+
+        # --- Łączenie wyników z historią ---
+        finalna_lista_urzadzen = list(aktywne_urzadzenia)
+        if urzadzenia_z_historii:
+            aktywne_mac_set = {d.mac for d in aktywne_urzadzenia if d.mac}
+            for history_dev in urzadzenia_z_historii:
+                # Dodaj urządzenie z historii tylko jeśli ma znany adres MAC i nie jest obecnie aktywne
+                if history_dev.mac and history_dev.mac not in aktywne_mac_set:
+                    finalna_lista_urzadzen.append(history_dev)
+        
+        # Sortowanie finalnej listy po IP
+        finalna_lista_urzadzen.sort(key=lambda d: ipaddress.ip_address(d.ip))
+        # --- Koniec łączenia ---
 
         wyswietl_legende_kolorow_urzadzen()
         wyswietl_legende_portow(wyniki_skanowania_portow_do_legendy)
         wyswietl_legende_systemow(os_cache_wyniki_do_legendy) 
         
         wyswietl_tabele_urzadzen(
-            lista_urzadzen_do_wyswietlenia, 
+            finalna_lista_urzadzen, 
             kolumny_dla_terminalu
         )
 
@@ -4585,11 +4717,11 @@ if __name__ == "__main__":
         wyswietl_tekst_w_linii("-",DEFAULT_LINE_WIDTH,"",Fore.LIGHTCYAN_EX,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
 
         # Zapytaj o generowanie polecenia WoL
-        zapytaj_i_generuj_polecenie_wol(lista_urzadzen_do_wyswietlenia, siec_prefix)
+        zapytaj_i_generuj_polecenie_wol(finalna_lista_urzadzen, siec_prefix)
 
         # Obsługa generowania raportu HTML
         obsluz_generowanie_raportu_html(
-            lista_urzadzen_do_wyswietlenia=lista_urzadzen_do_wyswietlenia,
+            lista_urzadzen_do_wyswietlenia=finalna_lista_urzadzen,
             uzyc_wybranych_w_html=uzyc_wybranych_w_html,
             kolumny_dla_terminalu=kolumny_dla_terminalu,
             domyslne_kolumny_do_wyswietlenia_html=DOMYSLNE_KOLUMNY_DO_WYSWIETLENIA,
@@ -4598,6 +4730,10 @@ if __name__ == "__main__":
             opisy_portow_globalne=OPISY_PORTOW,
             niestandardowe_porty_serwera_mapa=niestandardowe_porty_serwera_mapa
         )
+
+        # --- Zapisywanie historii skanowania ---
+        # Zapisujemy całą finalną listę, aby zachować pełną historię
+        zapisz_historie_skanowania(finalna_lista_urzadzen, siec_prefix)
 
         wyswietl_tekst_w_linii("-",DEFAULT_LINE_WIDTH,"Skanowanie zakończone. Przewiń wyżej, aby zobaczyć wszystkie informacje.",Fore.LIGHTCYAN_EX,Fore.LIGHTCYAN_EX,dodaj_odstepy=True)
     except KeyboardInterrupt:
